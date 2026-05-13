@@ -114,13 +114,13 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| INFRA-01 | Phase 1 | Pending |
+| INFRA-02 | Phase 1 | Pending |
+| INFRA-03 | Phase 1 | Pending |
+| INFRA-04 | Phase 1 | Pending |
 | CONN-01 | Phase 2 | Pending |
-| CONN-02 | Phase 3 | Pending |
-| CONN-03 | Phase 3 | Pending |
-| CONN-04 | Phase 3 | Pending |
 | CONN-05 | Phase 2 | Pending |
 | CONN-06 | Phase 2 | Pending |
-| CONN-07 | Phase 3 | Pending |
 | PROC-01 | Phase 2 | Pending |
 | PROC-02 | Phase 2 | Pending |
 | PROC-03 | Phase 2 | Pending |
@@ -131,6 +131,10 @@
 | PROC-08 | Phase 2 | Pending |
 | RETR-01 | Phase 2 | Pending |
 | RETR-02 | Phase 2 | Pending |
+| CONN-02 | Phase 3 | Pending |
+| CONN-03 | Phase 3 | Pending |
+| CONN-04 | Phase 3 | Pending |
+| CONN-07 | Phase 3 | Pending |
 | RETR-03 | Phase 4 | Pending |
 | RETR-04 | Phase 4 | Pending |
 | RETR-05 | Phase 4 | Pending |
@@ -144,27 +148,35 @@
 | GEN-05 | Phase 5 | Pending |
 | GEN-06 | Phase 5 | Pending |
 | GEN-07 | Phase 5 | Pending |
-| UI-01 | Phase 7 | Pending |
-| UI-02 | Phase 7 | Pending |
-| UI-03 | Phase 7 | Pending |
-| UI-04 | Phase 7 | Pending |
-| UI-05 | Phase 6 | Pending |
-| UI-06 | Phase 6 | Pending |
-| UI-07 | Phase 6 | Pending |
 | AUTH-01 | Phase 6 | Pending |
 | AUTH-02 | Phase 6 | Pending |
 | AUTH-03 | Phase 6 | Pending |
 | AUTH-04 | Phase 6 | Pending |
-| INFRA-01 | Phase 1 | Pending |
-| INFRA-02 | Phase 1 | Pending |
-| INFRA-03 | Phase 1 | Pending |
-| INFRA-04 | Phase 1 | Pending |
+| UI-05 | Phase 6 | Pending |
+| UI-06 | Phase 6 | Pending |
+| UI-07 | Phase 6 | Pending |
+| UI-01 | Phase 7 | Pending |
+| UI-02 | Phase 7 | Pending |
+| UI-03 | Phase 7 | Pending |
+| UI-04 | Phase 7 | Pending |
 
 **Coverage:**
-- v1 requirements: 44 total
-- Mapped to phases: 44
-- Unmapped: 0 ✓
+- v1 requirements: 45 total
+- Mapped to phases: 45
+- Unmapped: 0
+
+**Phase Distribution:**
+| Phase | Requirements | Count |
+|-------|-------------|-------|
+| Phase 1: Foundation Infrastructure | INFRA-01, INFRA-02, INFRA-03, INFRA-04 | 4 |
+| Phase 2: Data Ingestion Pipeline | CONN-01, CONN-05, CONN-06, PROC-01..08, RETR-01, RETR-02 | 13 |
+| Phase 3: Multi-Source Connectors | CONN-02, CONN-03, CONN-04, CONN-07 | 4 |
+| Phase 4: RAG Engine | RETR-03..08 | 6 |
+| Phase 5: Generation and Anti-Hallucination | GEN-01..07 | 7 |
+| Phase 6: Business Services and API | AUTH-01..04, UI-05, UI-06, UI-07 | 7 |
+| Phase 7: Frontend | UI-01..04 | 4 |
+| Phase 8: Evaluation and Monitoring (v2) | EVAL-01..04 | 4 |
 
 ---
 *Requirements defined: 2026-05-13*
-*Last updated: 2026-05-13 after initial definition*
+*Last updated: 2026-05-13 after roadmap creation*
