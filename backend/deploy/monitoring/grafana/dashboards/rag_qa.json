@@ -1,0 +1,238 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "System Health",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "panels": []
+    },
+    {
+      "title": "API Request Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 1},
+      "targets": [
+        {
+          "expr": "rate(http_requests_total{job=\"api-server\"}[5m])",
+          "legendFormat": "{{method}} {{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"}
+      }
+    },
+    {
+      "title": "API Response Time (P95)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 1},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=\"api-server\"}[5m]))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s"}
+      }
+    },
+    {
+      "title": "API Error Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 1},
+      "targets": [
+        {
+          "expr": "rate(http_requests_total{job=\"api-server\",status=~\"5..\"}[5m]) / rate(http_requests_total{job=\"api-server\"}[5m])",
+          "legendFormat": "error rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "percentunit"}
+      }
+    },
+    {
+      "title": "CPU Usage",
+      "type": "gauge",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 9},
+      "targets": [
+        {
+          "expr": "process_cpu_seconds_total{job=\"api-server\"}",
+          "legendFormat": "cpu"
+        }
+      ]
+    },
+    {
+      "title": "Memory Usage",
+      "type": "gauge",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 9},
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes{job=\"api-server\"}",
+          "legendFormat": "memory"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "bytes"}
+      }
+    },
+    {
+      "title": "Active Connections",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 9},
+      "targets": [
+        {
+          "expr": "rag_qa_active_connections",
+          "legendFormat": "connections"
+        }
+      ]
+    },
+    {
+      "title": "Uptime",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 9},
+      "targets": [
+        {
+          "expr": "time() - process_start_time_seconds{job=\"api-server\"}",
+          "legendFormat": "uptime"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s"}
+      }
+    },
+    {
+      "title": "QA Quality",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 15},
+      "panels": []
+    },
+    {
+      "title": "Faithfulness Score",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "rag_qa_faithfulness_score",
+          "legendFormat": "faithfulness"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"min": 0, "max": 1}
+      }
+    },
+    {
+      "title": "Answer Relevancy Score",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 16},
+      "targets": [
+        {
+          "expr": "rag_qa_answer_relevancy_score",
+          "legendFormat": "relevancy"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"min": 0, "max": 1}
+      }
+    },
+    {
+      "title": "Confidence Distribution",
+      "type": "histogram",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 16},
+      "targets": [
+        {
+          "expr": "rag_qa_confidence_score_bucket",
+          "legendFormat": "confidence"
+        }
+      ]
+    },
+    {
+      "title": "Bad Case Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "targets": [
+        {
+          "expr": "rate(rag_qa_badcase_total[1h])",
+          "legendFormat": "{{category}}"
+        }
+      ]
+    },
+    {
+      "title": "User Feedback Distribution",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "targets": [
+        {
+          "expr": "rag_qa_feedback_total",
+          "legendFormat": "{{type}}"
+        }
+      ]
+    },
+    {
+      "title": "Sync Status",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32},
+      "panels": []
+    },
+    {
+      "title": "Sync Task Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 33},
+      "targets": [
+        {
+          "expr": "rate(rag_qa_sync_tasks_total[5m])",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Sync Duration (P95)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 33},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(rag_qa_sync_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s"}
+      }
+    },
+    {
+      "title": "Documents Indexed",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 33},
+      "targets": [
+        {
+          "expr": "rag_qa_documents_indexed_total",
+          "legendFormat": "indexed"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["rag-qa"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "RAG-QA Dashboard",
+  "uid": "rag-qa-overview",
+  "version": 1
+}
