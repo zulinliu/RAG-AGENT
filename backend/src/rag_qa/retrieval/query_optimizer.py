@@ -52,7 +52,7 @@ class QueryOptimizer:
         self._llm = llm_client
 
     async def _chat(self, prompt: str) -> str:
-        resp = await self._llm.chat(
+        resp = await self._llm.generate(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=512,

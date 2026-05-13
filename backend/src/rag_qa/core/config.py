@@ -73,8 +73,19 @@ class LLMConfig(BaseSettings):
 class EmbeddingConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EMBEDDING_")
 
+    api_base: str = Field(default="http://localhost:8001", alias="EMBEDDING_API_BASE")
+    api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
     model_name: str = Field(default="BAAI/bge-large-zh-v1.5", alias="EMBEDDING_MODEL_NAME")
     dimension: int = Field(default=1024, alias="EMBEDDING_DIMENSION")
+
+
+class RerankerConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="RERANKER_")
+
+    api_base: str = Field(default="http://localhost:8002", alias="RERANKER_API_BASE")
+    api_key: str = Field(default="", alias="RERANKER_API_KEY")
+    model_name: str = Field(default="BAAI/bge-reranker-v2-m3", alias="RERANKER_MODEL_NAME")
+    threshold: float = Field(default=0.3, alias="RERANKER_THRESHOLD")
 
 
 class SecurityConfig(BaseSettings):
@@ -108,6 +119,7 @@ class Settings(BaseSettings):
     minio: MinIOConfig = MinIOConfig()
     llm: LLMConfig = LLMConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
+    reranker: RerankerConfig = RerankerConfig()
     security: SecurityConfig = SecurityConfig()
     sync: SyncConfig = SyncConfig()
 

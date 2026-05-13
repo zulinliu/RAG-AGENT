@@ -11,7 +11,9 @@
 - [系统架构](#系统架构)
 - [技术栈](#技术栈)
 - [项目结构](#项目结构)
+- [部署基础环境](#部署基础环境)
 - [快速开始](#快速开始)
+- [模型服务配置](#模型服务配置)
 - [配置文件详解](#配置文件详解)
 - [使用说明](#使用说明)
 - [注意事项](#注意事项)
@@ -227,6 +229,230 @@
 
 ---
 
+## 部署基础环境
+
+系统依赖以下基础组件，所有组件均通过 Docker 部署，也可使用已有服务。
+
+### 组件清单
+
+| 组件 | 版本 | 用途 | 必选 | 默认端口 |
+|------|------|------|------|---------|
+| PostgreSQL | 16 | 业务数据存储（用户/项目/文档/对话） | ✅ | 5432 |
+| Redis | 7.x | 缓存 + 消息队列（Celery Broker） | ✅ | 6379 |
+| Milvus | 2.6+ | 向量数据库（文档块语义检索） | ✅ | 19530 |
+| Elasticsearch | 8.x | 全文检索（BM25 关键词搜索） | ✅ | 9200 |
+| MinIO | latest | 对象存储（原始文档文件存储） | ✅ | 9000 |
+| etcd | 3.5+ | Milvus 元数据存储（Milvus 依赖） | ✅ | 2379 |
+| Nginx | 1.24+ | 反向代理 + HTTPS + 前端静态文件 | 生产必选 | 80/443 |
+| Prometheus | 2.x | 指标采集 | 可选 | 9090 |
+| Grafana | 10.x | 监控仪表盘 | 可选 | 3000 |
+
+### Docker 安装
+
+如果服务器尚未安装 Docker，请先安装：
+
+```bash
+# Ubuntu/Debian
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+newgrp docker
+
+# 安装 Docker Compose V2（已内置于 Docker 24.0+）
+docker compose version
+```
+
+### 各组件 Docker 部署说明
+
+> 以下为独立部署各组件的说明。如果使用项目自带的 `docker-compose.yml`，这些组件会自动编排启动，无需单独部署。
+
+#### 1. PostgreSQL 16
+
+```bash
+docker run -d \
+  --name postgresql \
+  --restart unless-stopped \
+  -e POSTGRES_DB=rag_qa \
+  -e POSTGRES_USER=rag_qa \
+  -e POSTGRES_PASSWORD=rag_qa_password \
+  -v pg-data:/var/lib/postgresql/data \
+  -p 5432:5432 \
+  postgres:16
+
+# 验证
+docker exec postgresql psql -U rag_qa -d rag_qa -c "SELECT version();"
+```
+
+**配置要点：**
+- 生产环境必须修改默认密码
+- 建议配置 `shared_buffers` 为物理内存的 25%
+- 数据目录建议挂载到 SSD
+
+#### 2. Redis 7
+
+```bash
+docker run -d \
+  --name redis \
+  --restart unless-stopped \
+  -v redis-data:/data \
+  -p 6379:6379 \
+  redis:7-alpine \
+  redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly yes
+
+# 验证
+docker exec redis redis-cli ping
+```
+
+**配置要点：**
+- 建议设置 `maxmemory` 防止 OOM
+- 开启 AOF 持久化避免数据丢失
+- 生产环境建议设置密码（`--requirepass`）
+
+#### 3. Milvus 2.6（含 etcd + MinIO）
+
+Milvus 依赖 etcd 和 MinIO，建议使用官方 docker-compose 一起部署：
+
+```bash
+# 下载 Milvus 官方编排文件
+wget https://github.com/milvus-io/milvus/releases/download/v2.6.0/milvus-standalone-docker-compose.yml -O docker-compose.milvus.yml
+
+# 启动 Milvus + etcd + MinIO
+docker compose -f docker-compose.milvus.yml up -d
+
+# 验证
+curl http://localhost:9091/healthz
+```
+
+**或手动分别部署：**
+
+```bash
+# etcd
+docker run -d \
+  --name etcd \
+  --restart unless-stopped \
+  -e ETCD_AUTO_COMPACTION_MODE=revision \
+  -e ETCD_AUTO_COMPACTION_RETENTION=1000 \
+  -e ETCD_QUOTA_BACKEND_BYTES=4294967296 \
+  -v etcd-data:/etcd \
+  -p 2379:2379 \
+  quay.io/coreos/etcd:v3.5.16 \
+  etcd -advertise-client-urls=http://0.0.0.0:2379 \
+       -listen-client-urls http://0.0.0.0:2379 \
+       --data-dir /etcd
+
+# MinIO
+docker run -d \
+  --name minio \
+  --restart unless-stopped \
+  -e MINIO_ACCESS_KEY=minioadmin \
+  -e MINIO_SECRET_KEY=minioadmin \
+  -v minio-data:/data \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  minio/minio:latest \
+  server /data --console-address ":9001"
+
+# Milvus
+docker run -d \
+  --name milvus \
+  --restart unless-stopped \
+  -e ETCD_ENDPOINTS=etcd:2379 \
+  -e MINIO_ADDRESS=minio:9000 \
+  -v milvus-data:/var/lib/milvus \
+  -p 19530:19530 \
+  -p 9091:9091 \
+  milvusdb/milvus:v2.6.0
+```
+
+**配置要点：**
+- Milvus 数据目录建议使用 NVMe SSD
+- 生产环境 MinIO 密钥必须修改
+- Milvus 2.6 默认使用 Partition Key 功能，无需额外配置
+
+#### 4. Elasticsearch 8.x（含 ik 中文分词）
+
+```bash
+# 安装 ik 分词器插件后启动
+docker run -d \
+  --name elasticsearch \
+  --restart unless-stopped \
+  -e discovery.type=single-node \
+  -e xpack.security.enabled=false \
+  -e "ES_JAVA_OPTS=-Xms1g -Xmx1g" \
+  -v es-data:/usr/share/elasticsearch/data \
+  -v es-plugins:/usr/share/elasticsearch/plugins \
+  -p 9200:9200 \
+  elasticsearch:8.17.0
+
+# 安装 ik 分词器（首次部署后执行一次）
+docker exec elasticsearch bin/elasticsearch-plugin install \
+  https://get.infini.cloud/elasticsearch/analysis-ik/8.17.0
+docker restart elasticsearch
+
+# 验证
+curl http://localhost:9200
+curl -X POST "localhost:9200/_analyze?pretty" \
+  -H 'Content-Type: application/json' \
+  -d '{"analyzer": "ik_max_word", "text": "企业知识问答系统"}'
+```
+
+**配置要点：**
+- `ES_JAVA_OPTS` 建议设为物理内存的 50%，不超过 32GB
+- ik 分词器版本必须与 ES 版本严格匹配
+- 生产环境建议开启安全认证（`xpack.security.enabled=true`）
+
+#### 5. Nginx（生产环境反向代理）
+
+```bash
+docker run -d \
+  --name nginx \
+  --restart unless-stopped \
+  -v /path/to/nginx.conf:/etc/nginx/nginx.conf:ro \
+  -v /path/to/ssl:/etc/nginx/ssl:ro \
+  -v /path/to/frontend/dist:/usr/share/nginx/html:ro \
+  -p 80:80 \
+  -p 443:443 \
+  nginx:1.24-alpine
+```
+
+**配置要点：**
+- 必须配置 SSL 证书启用 HTTPS
+- SSE 流式接口需关闭 `proxy_buffering`
+- 前端静态文件通过 Nginx 直接托管
+
+#### 6. Prometheus + Grafana（可选监控）
+
+```bash
+# Prometheus
+docker run -d \
+  --name prometheus \
+  --restart unless-stopped \
+  -v /path/to/prometheus.yml:/etc/prometheus/prometheus.yml:ro \
+  -v prometheus-data:/prometheus \
+  -p 9090:9090 \
+  prom/prometheus:v2.50.0
+
+# Grafana
+docker run -d \
+  --name grafana \
+  --restart unless-stopped \
+  -v grafana-data:/var/lib/grafana \
+  -p 3000:3000 \
+  grafana/grafana:10.3.0
+```
+
+### 一键启动所有基础组件（推荐）
+
+使用项目自带的 Docker Compose 编排文件一键启动所有组件：
+
+```bash
+cd backend
+docker compose up -d etcd minio milvus-standalone elasticsearch postgresql redis
+```
+
+该命令会自动启动所有基础组件，无需逐一手动部署。
+
+---
+
 ## 快速开始
 
 ### 环境要求
@@ -317,6 +543,272 @@ LLM_MODEL_NAME=qwen-plus
 
 ---
 
+## 模型服务配置
+
+系统涉及三类模型服务：**LLM（大语言模型）**、**Embedding（文本向量化模型）**、**Reranker（重排序模型）**。每类模型均支持 **本地私有化部署** 和 **第三方 API 调用** 两种模式，通过配置 `.env` 文件中的 `API_BASE`、`API_KEY`、`MODEL_NAME` 即可切换。
+
+### 模型服务总览
+
+| 模型类型 | 功能 | 私有部署推荐 | 第三方 API 可选 |
+|---------|------|-------------|---------------|
+| LLM | 答案生成、查询改写、意图识别、指代消解、评估 | Qwen2.5-72B-Instruct | 阿里云 DashScope、OpenAI、智谱 AI、DeepSeek 等 |
+| Embedding | 文本向量化（文档索引 + 查询编码） | bge-large-zh-v1.5 | 阿里云 DashScope、OpenAI、Jina AI 等 |
+| Reranker | 检索结果重排序 | bge-reranker-v2-m3 | Jina Reranker、Cohere Rerank 等 |
+
+### 方式一：本地私有化部署
+
+#### LLM 私有部署（vLLM）
+
+推荐使用 vLLM 加速推理，兼容 OpenAI API 格式：
+
+```bash
+# GPU 要求：4×A100 80GB（Qwen2.5-72B）或 2×A100 80GB（Qwen2.5-32B）
+docker run -d \
+  --name vllm-server \
+  --restart unless-stopped \
+  --gpus all \
+  -v /path/to/models:/models \
+  -p 8000:8000 \
+  vllm/vllm-openai:latest \
+  --model /models/Qwen2.5-72B-Instruct \
+  --served-model-name Qwen2.5-72B-Instruct \
+  --trust-remote-code \
+  --max-model-len 8192 \
+  --gpu-memory-utilization 0.9
+
+# 验证
+curl http://localhost:8000/v1/models
+```
+
+**.env 配置：**
+
+```bash
+LLM_API_BASE=http://localhost:8000/v1
+LLM_API_KEY=empty
+LLM_MODEL_NAME=Qwen2.5-72B-Instruct
+```
+
+#### Embedding 私有部署
+
+使用 TEI (Text Embeddings Inference) 或自建 FastAPI 服务：
+
+```bash
+# 方式 A：使用 TEI（推荐，GPU 加速）
+docker run -d \
+  --name embedding-server \
+  --restart unless-stopped \
+  --gpus all \
+  -p 8001:80 \
+  ghcr.io/huggingface/text-embeddings-inference:latest \
+  --model-id BAAI/bge-large-zh-v1.5 \
+  --max-batch-size 32
+
+# 方式 B：使用 sentence-transformers 自建服务
+pip install sentence-transformers fastapi uvicorn
+python -c "
+from sentence_transformers import SentenceTransformer
+from fastapi import FastAPI
+import uvicorn
+
+app = FastAPI()
+model = SentenceTransformer('BAAI/bge-large-zh-v1.5')
+
+@app.post('/embeddings')
+async def embed(request: dict):
+    texts = request.get('input', [])
+    embeddings = model.encode(texts).tolist()
+    return {'data': [{'embedding': e, 'index': i} for i, e in enumerate(embeddings)]}
+
+uvicorn.run(app, host='0.0.0.0', port=8001)
+"
+```
+
+**.env 配置：**
+
+```bash
+EMBEDDING_API_BASE=http://localhost:8001
+EMBEDDING_API_KEY=
+EMBEDDING_MODEL_NAME=BAAI/bge-large-zh-v1.5
+EMBEDDING_DIMENSION=1024
+```
+
+#### Reranker 私有部署
+
+使用 TEI 或 FlagEmbedding 自建服务：
+
+```bash
+# 方式 A：使用 TEI（rerank 模式）
+docker run -d \
+  --name reranker-server \
+  --restart unless-stopped \
+  --gpus all \
+  -p 8002:80 \
+  ghcr.io/huggingface/text-embeddings-inference:latest \
+  --model-id BAAI/bge-reranker-v2-m3 \
+  --rerank
+
+# 验证
+curl http://localhost:8002/rerank \
+  -H "Content-Type: application/json" \
+  -d '{"query": "测试", "documents": ["文档1", "文档2"], "top_k": 2}'
+```
+
+**.env 配置：**
+
+```bash
+RERANKER_API_BASE=http://localhost:8002
+RERANKER_API_KEY=
+RERANKER_MODEL_NAME=BAAI/bge-reranker-v2-m3
+RERANKER_THRESHOLD=0.3
+```
+
+### 方式二：第三方 API 调用
+
+所有模型客户端均采用 **OpenAI 兼容 API 格式**，只需配置 `API_BASE`、`API_KEY`、`MODEL_NAME` 即可切换到第三方服务。
+
+#### 阿里云 DashScope（推荐国内用户）
+
+DashScope 兼容 OpenAI API 格式，支持 Qwen 系列模型和 Embedding：
+
+**.env 配置：**
+
+```bash
+# LLM - 通义千问
+LLM_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+LLM_MODEL_NAME=qwen-plus
+
+# Embedding - 通义文本向量
+EMBEDDING_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+EMBEDDING_MODEL_NAME=text-embedding-v3
+EMBEDDING_DIMENSION=1024
+```
+
+**可用模型：**
+
+| 模型类型 | 模型名称 | 说明 |
+|---------|---------|------|
+| LLM | `qwen-turbo` | 速度快，成本低，适合日常问答 |
+| LLM | `qwen-plus` | 性能均衡，推荐默认使用 |
+| LLM | `qwen-max` | 最强性能，复杂推理场景 |
+| LLM | `qwen-long` | 超长上下文（1M tokens），长文档场景 |
+| Embedding | `text-embedding-v3` | 最新版中文 Embedding |
+
+#### OpenAI
+
+**.env 配置：**
+
+```bash
+# LLM
+LLM_API_BASE=https://api.openai.com/v1
+LLM_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+LLM_MODEL_NAME=gpt-4o
+
+# Embedding
+EMBEDDING_API_BASE=https://api.openai.com/v1
+EMBEDDING_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+EMBEDDING_MODEL_NAME=text-embedding-3-large
+EMBEDDING_DIMENSION=1024
+```
+
+**可用模型：**
+
+| 模型类型 | 模型名称 | 说明 |
+|---------|---------|------|
+| LLM | `gpt-4o` | 综合能力强 |
+| LLM | `gpt-4o-mini` | 成本低，速度快 |
+| LLM | `gpt-4-turbo` | 推理能力强 |
+| Embedding | `text-embedding-3-large` | 3072 维，可降维至 1024 |
+| Embedding | `text-embedding-3-small` | 1536 维，性价比高 |
+
+#### 智谱 AI (BigModel)
+
+**.env 配置：**
+
+```bash
+# LLM
+LLM_API_BASE=https://open.bigmodel.cn/api/paas/v4
+LLM_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxx
+LLM_MODEL_NAME=glm-4-plus
+
+# Embedding
+EMBEDDING_API_BASE=https://open.bigmodel.cn/api/paas/v4
+EMBEDDING_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxx
+EMBEDDING_MODEL_NAME=embedding-3
+EMBEDDING_DIMENSION=2048
+```
+
+#### DeepSeek
+
+**.env 配置：**
+
+```bash
+LLM_API_BASE=https://api.deepseek.com/v1
+LLM_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+LLM_MODEL_NAME=deepseek-chat
+```
+
+#### Jina AI（Embedding + Reranker）
+
+**.env 配置：**
+
+```bash
+# Embedding
+EMBEDDING_API_BASE=https://api.jina.ai/v1
+EMBEDDING_API_KEY=jina_xxxxxxxxxxxxxxxx
+EMBEDDING_MODEL_NAME=jina-embeddings-v3
+EMBEDDING_DIMENSION=1024
+
+# Reranker
+RERANKER_API_BASE=https://api.jina.ai/v1
+RERANKER_API_KEY=jina_xxxxxxxxxxxxxxxx
+RERANKER_MODEL_NAME=jina-reranker-v2-base-multilingual
+```
+
+#### Cohere（Reranker）
+
+**.env 配置：**
+
+```bash
+RERANKER_API_BASE=https://api.cohere.ai/v1
+RERANKER_API_KEY=xxxxxxxxxxxxxxxxxx
+RERANKER_MODEL_NAME=rerank-multilingual-v3.0
+```
+
+> ⚠️ 注意：Cohere Rerank API 格式与 TEI 不同，如需使用需适配 `Reranker` 类的请求/响应格式。
+
+### 混合部署示例
+
+可以灵活组合本地部署和第三方 API，例如：
+
+| 场景 | LLM | Embedding | Reranker | 说明 |
+|------|-----|-----------|----------|------|
+| 全私有化 | 本地 Qwen2.5-72B | 本地 bge-large-zh | 本地 bge-reranker | 数据不出内网，需 GPU |
+| 全 API | DashScope qwen-plus | DashScope text-embedding | Jina Reranker | 无需 GPU，按量付费 |
+| 混合（推荐） | DashScope qwen-plus | 本地 bge-large-zh | 本地 bge-reranker | LLM 用 API 省资源，Embedding/Reranker 本地保障数据安全 |
+| 最小化 | DashScope qwen-turbo | DashScope text-embedding | 关闭 Rerank | 成本最低，适合试用 |
+
+### 关闭 Reranker（可选）
+
+如果不需要重排序功能，可以在初始化 `HybridRetriever` 时设置 `use_rerank=False`，此时跳过 Rerank 步骤，直接使用 RRF 融合结果。
+
+### Embedding 维度匹配
+
+切换 Embedding 模型时，**必须确保 `EMBEDDING_DIMENSION` 与模型输出维度一致**，且 Milvus Collection 需要重建：
+
+| 模型 | 输出维度 | `EMBEDDING_DIMENSION` 设置 |
+|------|---------|---------------------------|
+| bge-large-zh-v1.5 | 1024 | `1024` |
+| text-embedding-v3 (DashScope) | 1024/768 | `1024` |
+| text-embedding-3-large (OpenAI) | 3072（可降维） | `1024`（降维）或 `3072` |
+| text-embedding-3-small (OpenAI) | 1536 | `1536` |
+| jina-embeddings-v3 | 1024 | `1024` |
+
+> ⚠️ 切换 Embedding 模型后，需要清空 Milvus Collection 并重新索引所有文档，因为不同模型的向量空间不兼容。
+
+---
+
 ## 配置文件详解
 
 ### 环境变量 (.env)
@@ -374,8 +866,19 @@ LLM_MODEL_NAME=qwen-plus
 
 | 变量名 | 默认值 | 说明 |
 |-------|--------|------|
+| `EMBEDDING_API_BASE` | `http://localhost:8001` | Embedding API 地址（兼容 OpenAI 格式） |
+| `EMBEDDING_API_KEY` | — | API 密钥（本地部署留空） |
 | `EMBEDDING_MODEL_NAME` | `BAAI/bge-large-zh-v1.5` | Embedding 模型名称 |
 | `EMBEDDING_DIMENSION` | `1024` | 向量维度（需与模型匹配） |
+
+#### Reranker 配置
+
+| 变量名 | 默认值 | 说明 |
+|-------|--------|------|
+| `RERANKER_API_BASE` | `http://localhost:8002` | Reranker API 地址 |
+| `RERANKER_API_KEY` | — | API 密钥（本地部署留空） |
+| `RERANKER_MODEL_NAME` | `BAAI/bge-reranker-v2-m3` | Reranker 模型名称 |
+| `RERANKER_THRESHOLD` | `0.3` | 相关性阈值，低于此分数的结果被剔除 |
 
 #### 安全配置
 
@@ -409,12 +912,21 @@ milvus:
 
 llm:
   api_base: "http://localhost:8000/v1"
+  api_key: "empty"
   model_name: "Qwen2.5-72B-Instruct"
   temperature: 0.1
 
 embedding:
+  api_base: "http://localhost:8001"
+  api_key: ""
   model_name: "BAAI/bge-large-zh-v1.5"
   dimension: 1024
+
+reranker:
+  api_base: "http://localhost:8002"
+  api_key: ""
+  model_name: "BAAI/bge-reranker-v2-m3"
+  threshold: 0.3
 
 security:
   secret_key: "your-production-secret-key"
