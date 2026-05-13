@@ -1,0 +1,404 @@
+# RAG-AGENT — 企业多源项目知识问答系统
+
+基于 RAG（检索增强生成）架构的企业级知识问答系统，整合钉钉知识库、Seafile、NAS、本地文件等多数据源项目材料，通过自然语言交互为项目成员提供精准、可追溯的知识问答服务。
+
+## 项目亮点
+
+### 核心特性
+
+- **精准问答** — 目标准确率 >= 90%，幻觉率 <= 5%，每个回答附带来源文档引用
+- **多源整合** — 钉钉知识库、Seafile、NAS（NFS/SMB/WebDAV）、本地文件一站式接入
+- **中文优化** — 专用中文分块引擎（结构感知 + jieba边界保护）、bge-large-zh-v1.5 Embedding、ik_max_word中文分词
+- **混合检索** — BM25关键词检索 + 向量语义检索 + RRF融合 + Cross-Encoder重排序
+- **多层反幻觉** — 检索过滤 → CRAG自校正循环 → 强制引用 → 引用验证 → 置信度评估（5层防御）
+- **项目隔离** — RBAC权限模型 + Milvus Partition Key项目级数据隔离
+- **流式输出** — SSE实时流式响应，Markdown渲染 + 代码高亮
+- **私有部署** — 全链路私有化，数据不出域，Docker Compose一键部署
+
+### 技术架构
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Frontend (React/Next.js)               │
+├──────────────────────────────────────────────────────────┤
+│                    API Gateway (FastAPI)                  │
+├──────────┬──────────┬───────────┬────────────────────────┤
+│ Auth/RBAC│ Project  │   QA      │  Document Management   │
+├──────────┴──────────┴───────────┴────────────────────────┤
+│              RAG Engine (LangGraph CRAG Pipeline)         │
+│  Query Understanding → Hybrid Retrieval → RRF → Rerank  │
+│  → Document Grading → Generate → Citation Verify         │
+├──────────────────────────────────────────────────────────┤
+│           Document Processing Pipeline                    │
+│  Parse → Clean → Chunk → Embed(bge-large-zh) → Dual-Index│
+├──────────────────────────────────────────────────────────┤
+│        Data Source Connectors                             │
+│  DingTalk │ Seafile │ NAS │ Local Files                   │
+├──────────────────────────────────────────────────────────┤
+│  PostgreSQL │ Milvus 2.6 │ Elasticsearch 8.19 │ Redis 7  │
+└──────────────────────────────────────────────────────────┘
+```
+
+## 系统要求
+
+### 硬件要求
+
+| 组件 | 最低配置 | 推荐配置 |
+|------|---------|---------|
+| CPU | 8核 | 16核+ |
+| 内存 | 32GB | 64GB+ |
+| GPU | 无（可用API替代LLM） | 4xA100 80GB（私有部署LLM） |
+| 存储 | 100GB SSD | 500GB+ NVMe |
+
+### 软件要求
+
+| 组件 | 版本 | 说明 |
+|------|------|------|
+| Docker | 27.x+ | 容器运行时 |
+| Docker Compose | 2.x+ | 容器编排 |
+| Python | 3.11+ | 后端运行时 |
+| Node.js | 20.x+ | 前端构建 |
+| NVIDIA Driver | 535+ | GPU驱动（私有部署LLM时需要） |
+| CUDA | 12.x | GPU计算（私有部署LLM时需要） |
+
+### 核心技术栈
+
+| 层级 | 技术 | 版本 |
+|------|------|------|
+| 后端框架 | FastAPI + Pydantic v2 | 0.136+ / 2.13+ |
+| 前端框架 | React + Next.js + Tailwind CSS | 19 / 15 / 4 |
+| LLM | Qwen2.5-72B-Instruct (vLLM) | 0.20+ |
+| Embedding | bge-large-zh-v1.5 | 1024维 |
+| Rerank | bge-reranker-v2-m3 | Cross-Encoder |
+| 向量数据库 | Milvus | 2.6.x |
+| 全文检索 | Elasticsearch | 8.19.x |
+| 关系数据库 | PostgreSQL | 17.x |
+| 缓存/队列 | Redis | 7.x |
+| 对象存储 | MinIO | latest |
+| 文档解析 | MinerU + PaddleOCR + Unstructured | 1.3+ / 3.5+ / 0.22+ |
+| 工作流 | LangGraph | 1.2+ |
+| 任务队列 | Celery | 5.6+ |
+
+## 快速开始
+
+### 1. 克隆项目
+
+```bash
+git clone <repository-url> rag-agent
+cd rag-agent
+```
+
+### 2. 配置环境变量
+
+```bash
+cp .env.example .env
+# 编辑 .env 文件，配置数据库密码、JWT密钥等
+vim .env
+```
+
+**必须修改的配置项：**
+
+```env
+# JWT密钥（生产环境必须更换！）
+JWT_SECRET=your-secret-key-change-this-in-production
+
+# 数据库密码
+POSTGRES_PASSWORD=your-secure-password
+
+# Redis密码
+REDIS_PASSWORD=your-redis-password
+```
+
+### 3. 一键启动（Docker Compose）
+
+```bash
+# 启动所有基础设施服务
+docker compose up -d
+
+# 等待服务就绪（约30秒）
+# 初始化数据库和索引
+bash scripts/init-db.sh
+bash scripts/init-es.sh
+python scripts/init-milvus.py
+```
+
+### 4. 启动后端
+
+```bash
+cd backend
+
+# 安装依赖（开发环境）
+pip install -e ".[dev]"
+
+# 运行数据库迁移
+alembic upgrade head
+
+# 启动开发服务器
+python run.py
+```
+
+### 5. 启动前端
+
+```bash
+cd frontend
+
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+```
+
+### 6. 访问系统
+
+- 前端界面：http://localhost:3000
+- 后端API文档：http://localhost:8000/docs
+- 默认管理员：admin / admin123
+
+### 7. LLM 配置
+
+**方式一：私有部署（推荐）**
+
+```bash
+# 在GPU服务器上启动vLLM
+python -m vllm.entrypoints.openai.api_server \
+  --model Qwen/Qwen2.5-72B-Instruct \
+  --tensor-parallel-size 4 \
+  --host 0.0.0.0 \
+  --port 8001
+```
+
+更新 `.env`：
+```env
+LLM_API_URL=http://your-gpu-server:8001/v1
+```
+
+**方式二：API调用（快速验证）**
+
+```env
+LLM_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_API_KEY=your-api-key
+LLM_MODEL_NAME=qwen-plus
+```
+
+## 配置文件详解
+
+### 环境变量配置 (.env)
+
+```env
+# ==================== 基础配置 ====================
+ENVIRONMENT=dev                    # 运行环境: dev / test / prod
+LOG_LEVEL=INFO                     # 日志级别: DEBUG / INFO / WARNING / ERROR
+SECRET_KEY=change-this-secret-key  # 应用密钥
+
+# ==================== PostgreSQL ====================
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_USER=ragagent
+POSTGRES_PASSWORD=ragagent123
+POSTGRES_DB=rag_agent
+
+# ==================== Redis ====================
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_PASSWORD=ragagent123
+REDIS_DB=0
+
+# ==================== Milvus ====================
+MILVUS_HOST=milvus-standalone
+MILVUS_PORT=19530
+
+# ==================== Elasticsearch ====================
+ES_HOST=http://elasticsearch:9200
+
+# ==================== MinIO ====================
+MINIO_ENDPOINT=minio:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=rag-docs
+
+# ==================== LLM ====================
+LLM_API_URL=http://localhost:8001/v1    # vLLM或API地址
+LLM_API_KEY=                             # API密钥（私有部署无需）
+LLM_MODEL_NAME=Qwen2.5-72B-Instruct     # 模型名称
+
+# ==================== Embedding ====================
+EMBEDDING_API_URL=http://embedding-worker:8100  # Embedding服务地址
+EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5         # Embedding模型
+
+# ==================== Reranker ====================
+RERANKER_API_URL=http://embedding-worker:8100   # Rerank服务地址
+RERANKER_MODEL=BAAI/bge-reranker-v2-m3         # Rerank模型
+
+# ==================== 认证 ====================
+JWT_SECRET=your-jwt-secret-key-change-this
+JWT_ALGORITHM=HS256
+JWT_EXPIRE_MINUTES=1440                  # Token过期时间（分钟）
+```
+
+### Docker Compose 配置
+
+- `docker-compose.yml` — 开发环境配置
+- `docker-compose.prod.yml` — 生产环境覆盖（资源限制、日志轮转）
+
+```bash
+# 开发环境
+docker compose up -d
+
+# 生产环境
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+### Elasticsearch 索引配置
+
+`config/elasticsearch/mappings.json` 定义了 `rag_chunks` 索引：
+- 使用 `ik_max_word` 分词器（中文最佳实践）
+- 1主分片 + 1副本
+- 包含15个字段（project_id、content、title、author等）
+
+### Milvus Collection 配置
+
+`config/milvus/collection.py` 定义了 `rag_chunks` Collection：
+- `project_id` 作为 Partition Key（项目级数据隔离）
+- `vector` 字段：FLOAT_VECTOR(1024)，HNSW索引（M=16, efConstruction=256, COSINE）
+- 支持按project_id分区查询
+
+## 使用说明
+
+### 创建项目和数据源
+
+1. 登录系统后，进入**管理后台 → 项目管理**
+2. 点击**创建项目**，填写项目名称和描述
+3. 进入项目详情，添加数据源：
+   - **本地文件**：指定服务器上的目录路径，系统自动监控文件变更
+   - **钉钉知识库**：填入企业CorpId和AppKey（API模式）或配置CLI模式
+   - **Seafile**：填入服务器地址、Token、资料库ID
+   - **NAS**：选择协议（NFS/SMB/WebDAV），填入地址和认证信息
+4. 点击**测试连接**确认连通性
+5. 点击**开始同步**，系统自动下载、解析、分块、索引文档
+
+### 知识问答
+
+1. 在**对话界面**选择要查询的项目
+2. 用自然语言提问，例如：
+   - "XX项目的系统架构设计方案是什么？"
+   - "为什么选择了A技术方案而不是B？"
+   - "上周评审会议的结论是什么？"
+3. 系统返回答案并附带来源引用（可点击查看原文）
+4. 对答案进行点赞/点踩反馈
+
+### 用户权限管理
+
+| 角色 | 权限 |
+|------|------|
+| 系统管理员 | 全部权限，管理所有项目 |
+| 项目管理员 | 管理指定项目的知识库、成员、数据源 |
+| 知识库管理员 | 管理指定项目的文档同步和索引 |
+| 普通用户 | 对有权限的项目进行知识问答 |
+| 只读用户 | 仅可查询，不可反馈 |
+
+## 项目结构
+
+```
+RAG-AGENT/
+├── backend/                    # Python后端
+│   ├── app/
+│   │   ├── api/                # API路由（auth/projects/datasources/documents/qa）
+│   │   ├── connectors/         # 数据源连接器（dingtalk/seafile/nas/local）
+│   │   ├── middleware/         # 中间件（auth/logging）
+│   │   ├── models/             # SQLAlchemy数据模型
+│   │   ├── processors/         # 文档处理（parser/chunker/embedding/indexer/pipeline）
+│   │   ├── rag/                # RAG引擎（retriever/reranker/generator/graph）
+│   │   ├── schemas/            # Pydantic请求/响应模型
+│   │   ├── services/           # 业务服务（user/project/datasource/document/qa）
+│   │   ├── tasks/              # Celery异步任务
+│   │   └── utils/              # 工具（auth/logging/dedup）
+│   ├── alembic/                # 数据库迁移
+│   ├── pyproject.toml          # Python依赖
+│   └── Dockerfile              # 后端Docker镜像
+├── frontend/                   # React前端
+│   ├── src/
+│   │   ├── app/                # Next.js页面（chat/admin/login）
+│   │   ├── components/         # UI组件（chat/admin/ui）
+│   │   └── lib/                # 工具库（api/auth/store）
+│   ├── package.json            # Node.js依赖
+│   └── Dockerfile              # 前端Docker镜像
+├── config/                     # 基础设施配置
+│   ├── elasticsearch/          # ES索引映射
+│   ├── milvus/                 # Milvus Collection初始化
+│   ├── redis/                  # Redis配置
+│   └── postgresql.conf         # PostgreSQL优化配置
+├── scripts/                    # 初始化脚本
+├── docker-compose.yml          # 开发环境编排
+├── docker-compose.prod.yml     # 生产环境覆盖
+└── .env.example                # 环境变量模板
+```
+
+## 注意事项
+
+### 安全
+
+- **生产环境必须更换** `.env` 中的所有密码和密钥
+- JWT_SECRET 建议使用 `openssl rand -hex 32` 生成
+- 系统默认关闭Elasticsearch安全模块（xpack.security.enabled=false），内网部署时可接受
+- 所有API接口需要JWT Token认证（除 `/health` 和 `/auth/login`）
+- 数据按项目隔离，用户只能访问有权限的项目数据
+
+### 性能
+
+- **LLM推理是性能瓶颈**：首次提问较慢（模型加载），后续请求受益于vLLM的continuous batching
+- **Embedding服务需要GPU**：bge-large-zh-v1.5 在CPU上推理较慢，建议GPU部署
+- **文档处理耗时**：PDF OCR处理每页约1-3秒，大文档建议在非工作时间全量同步
+- **Milvus内存需求**：每100万1024维向量约需4GB内存
+
+### 运维
+
+- 定期检查Redis内存使用（`redis-cli info memory`）
+- 监控Elasticsearch磁盘空间（日志和数据共用磁盘时注意）
+- Milvus数据目录需要定期备份
+- PostgreSQL建议配置主从复制（生产环境）
+- MinIO建议配置多节点分布式模式（生产环境）
+
+### 已知限制
+
+- 钉钉API有调用频率限制（标准版1万次/月），建议使用CLI模式
+- PPT和图片OCR需要额外GPU资源，V1阶段支持基础解析
+- 多轮对话上下文窗口有限（最近5轮），超长对话会自动压缩
+- 中文分块效果依赖文档结构质量，无标题层级的文档效果稍差
+
+## 后续规划
+
+### V2（预计 Q3 2026）
+
+| 功能 | 描述 |
+|------|------|
+| PPT完整解析 | 提取文本框、备注、表格，图片用VLM描述 |
+| 图片OCR | PaddleOCR深度集成，支持图片文字提取 |
+| 钉钉机器人 | 在钉钉群内直接问答，无需打开Web |
+| RAGAS评估管道 | 自动化Faithfulness/Relevancy评估 |
+| BadCase管理 | 收集→分类→分析→优化→验证闭环 |
+| Grafana监控 | 准确率、满意度、延迟等核心指标仪表盘 |
+| 知识图谱增强 | GraphRAG跨文档关联查询 |
+| Agentic搜索 | Agent自主分解复杂问题，多步检索 |
+| 智能代码生成 | 基于项目知识库生成代码片段 |
+
+### V3（预计 Q1 2027）
+
+| 功能 | 描述 |
+|------|------|
+| 技术文档自动生成 | 从代码生成API文档、架构图 |
+| 会议纪要自动生成 | 从录音/速记生成结构化纪要 |
+| 主动知识推送 | 根据工作场景主动推送相关知识 |
+| 知识协作 | 用户对答案补充和纠错 |
+| 跨项目知识发现 | 自动发现相似方案和最佳实践 |
+| 项目报告自动生成 | 基于项目材料生成周报/月报 |
+
+## 技术支持
+
+- 项目方案文档：`企业多源项目知识问答Agent_项目方案.md`
+- API文档：启动后端后访问 `http://localhost:8000/docs`
+- 项目规划：`.planning/` 目录下的 ROADMAP.md 和 REQUIREMENTS.md
+
+## 开源协议
+
+内部项目，仅供公司内部使用。
