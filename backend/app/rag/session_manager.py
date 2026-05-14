@@ -29,6 +29,11 @@ class SessionManager:
         self._max_rounds = max_rounds
         self._max_context_tokens = max_context_tokens
 
+    async def close(self) -> None:
+        """Close the underlying connection pool."""
+        if self._pool is not None:
+            await self._pool.close()
+
     async def create_conversation(
         self,
         user_id: str,
@@ -57,19 +62,44 @@ class SessionManager:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        """添加消息到对话，返回 message_id。"""
+        """添加消息到对话，返回 message_id。
+
+        Maps to the ORM Message model columns:
+          - sources -> sources JSONB column
+          - feedback -> feedback column
+          - confidence_score -> confidence_score column
+          - metadata -> metadata JSONB column
+        """
         message_id = str(uuid.uuid4())
+
+        # Extract known ORM fields from metadata
+        sources = None
+        feedback = "none"
+        confidence_score = None
+        remaining_meta = {}
+
+        if metadata:
+            sources = metadata.pop("sources", None) or metadata.pop("citations", None)
+            confidence_score = metadata.pop("confidence", None) or metadata.pop("confidence_score", None)
+            fb = metadata.pop("feedback", None)
+            if fb:
+                feedback = fb
+            remaining_meta = {k: v for k, v in metadata.items() if v is not None}
+
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO messages (id, conversation_id, role, content, metadata, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO messages (id, conversation_id, role, content, sources, feedback, confidence_score, metadata, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """,
                 message_id,
                 conversation_id,
                 role,
                 content,
-                json.dumps(metadata or {}, ensure_ascii=False),
+                json.dumps(sources, ensure_ascii=False) if sources else None,
+                feedback,
+                confidence_score,
+                json.dumps(remaining_meta, ensure_ascii=False) if remaining_meta else None,
                 datetime.now(timezone.utc),
             )
             await conn.execute(
@@ -89,9 +119,9 @@ class SessionManager:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, role, content, metadata, created_at
+                SELECT id, role, content, sources, feedback, confidence_score, metadata, created_at
                 FROM (
-                    SELECT id, role, content, metadata, created_at
+                    SELECT id, role, content, sources, feedback, confidence_score, metadata, created_at
                     FROM messages
                     WHERE conversation_id = $1
                     ORDER BY created_at DESC
@@ -107,6 +137,9 @@ class SessionManager:
                 "message_id": str(r["id"]),
                 "role": r["role"],
                 "content": r["content"],
+                "sources": json.loads(r["sources"]) if r["sources"] else None,
+                "feedback": r["feedback"] or "none",
+                "confidence_score": r["confidence_score"],
                 "metadata": json.loads(r["metadata"]) if r["metadata"] else {},
                 "created_at": r["created_at"].isoformat(),
             }
@@ -165,8 +198,8 @@ class SessionManager:
                     )
                 await conn.execute(
                     """
-                    INSERT INTO messages (id, conversation_id, role, content, metadata, created_at)
-                    VALUES ($1, $2, 'system', $3, $4, $5)
+                    INSERT INTO messages (id, conversation_id, role, content, feedback, metadata, created_at)
+                    VALUES ($1, $2, 'system', $3, 'none', $4, $5)
                     """,
                     str(uuid.uuid4()),
                     conversation_id,
@@ -229,9 +262,11 @@ class SessionManager:
             await conn.execute(
                 """
                 UPDATE messages
-                SET metadata = COALESCE(metadata, '{}')::jsonb || $1::jsonb
-                WHERE id = $2
+                SET feedback = $1,
+                    metadata = COALESCE(metadata, '{}')::jsonb || $2::jsonb
+                WHERE id = $3
                 """,
+                feedback,
                 json.dumps({"feedback": feedback}),
                 message_id,
             )

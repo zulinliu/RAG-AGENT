@@ -109,7 +109,7 @@ async def list_conversations(
         check_project_permission(current_user, project_id)
 
     try:
-        conversations = await qa_service._session.list_conversations(
+        conversations = await qa_service.list_conversations(
             user_id=user_id,
             project_id=project_id,
             limit=min(limit, 100),
@@ -128,7 +128,7 @@ async def get_conversation(
 ) -> Any:
     """获取对话详情。"""
     try:
-        messages = await qa_service._session.get_history(conversation_id)
+        messages = await qa_service.get_conversation_history(conversation_id)
         if not messages:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return {

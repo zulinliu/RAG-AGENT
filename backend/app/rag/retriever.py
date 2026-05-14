@@ -43,6 +43,12 @@ class HybridRetriever:
     # Vector search (Milvus ANN)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _validate_uuid(value: str) -> str:
+        """Validate that a value is a properly formatted UUID to prevent filter injection."""
+        import uuid as _uuid
+        return str(_uuid.UUID(value))
+
     async def vector_search(
         self,
         query_embedding: list[float],
@@ -51,14 +57,15 @@ class HybridRetriever:
     ) -> list[SearchResult]:
         """在 Milvus 中执行 ANN 向量检索。"""
         try:
+            safe_project_id = self._validate_uuid(project_id)
             results = await asyncio.to_thread(
                 self._milvus.search,
                 collection_name=self._collection_name,
                 data=[query_embedding],
                 limit=top_k,
-                output_fields=["chunk_id", "content", "metadata"],
-                filter=f'project_id == "{project_id}"',
-                search_params={"metric_type": "COSINE", "params": {"nprobe": 16}},
+                output_fields=["id", "document_id", "content", "parent_title", "hierarchy", "chunk_type"],
+                filter=f'project_id == "{safe_project_id}"',
+                search_params={"metric_type": "COSINE", "params": {"ef": 64}},
             )
             search_results: list[SearchResult] = []
             for hits in results:
@@ -66,11 +73,16 @@ class HybridRetriever:
                     entity = hit.get("entity", {})
                     search_results.append(
                         SearchResult(
-                            chunk_id=entity.get("chunk_id", str(hit.get("id", ""))),
+                            chunk_id=entity.get("id", str(hit.get("id", ""))),
                             content=entity.get("content", ""),
                             score=float(hit.get("distance", 0.0)),
                             source="vector",
-                            metadata=entity.get("metadata", {}),
+                            metadata={
+                                "document_id": entity.get("document_id", ""),
+                                "parent_title": entity.get("parent_title", ""),
+                                "hierarchy": entity.get("hierarchy", ""),
+                                "chunk_type": entity.get("chunk_type", ""),
+                            },
                         )
                     )
             logger.info(
@@ -95,6 +107,7 @@ class HybridRetriever:
     ) -> list[SearchResult]:
         """在 Elasticsearch 中执行 BM25 文本检索。"""
         try:
+            safe_project_id = self._validate_uuid(project_id)
             body: dict[str, Any] = {
                 "size": top_k,
                 "query": {
@@ -103,15 +116,15 @@ class HybridRetriever:
                             {
                                 "multi_match": {
                                     "query": query_text,
-                                    "fields": ["content^2", "title^1"],
+                                    "fields": ["content^2", "parent_title^1"],
                                     "type": "best_fields",
                                 }
                             }
                         ],
-                        "filter": [{"term": {"project_id": project_id}}],
+                        "filter": [{"term": {"project_id": safe_project_id}}],
                     }
                 },
-                "_source": ["chunk_id", "content", "metadata"],
+                "_source": ["document_id", "content", "parent_title", "hierarchy", "chunk_type"],
             }
             resp = await self._es.search(index=self._es_index, body=body)
             search_results: list[SearchResult] = []
@@ -119,11 +132,16 @@ class HybridRetriever:
                 src = hit["_source"]
                 search_results.append(
                     SearchResult(
-                        chunk_id=src.get("chunk_id", hit["_id"]),
+                        chunk_id=hit["_id"],
                         content=src.get("content", ""),
                         score=float(hit["_score"]),
                         source="bm25",
-                        metadata=src.get("metadata", {}),
+                        metadata={
+                            "document_id": src.get("document_id", ""),
+                            "parent_title": src.get("parent_title", ""),
+                            "hierarchy": src.get("hierarchy", ""),
+                            "chunk_type": src.get("chunk_type", ""),
+                        },
                     )
                 )
             logger.info(

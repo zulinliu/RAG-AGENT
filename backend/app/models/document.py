@@ -35,6 +35,11 @@ class Document(Base, BaseMixin):
     file_path: Mapped[str | None] = mapped_column(Text)
     file_size: Mapped[int | None] = mapped_column(Integer)
     mime_type: Mapped[str | None] = mapped_column(String(128))
+    file_type: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        comment="Normalized file type: pdf / docx / xlsx / pptx / markdown / text / csv / image",
+    )
     checksum: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,

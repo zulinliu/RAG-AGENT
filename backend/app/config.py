@@ -189,15 +189,28 @@ class RerankerConfig(BaseSettings):
     model_name: str = "BAAI/bge-reranker-v2-m3"
     threshold: float = 0.3
 
+    @property
+    def resolved_provider(self) -> str:
+        """Return the effective provider key for looking up defaults.
+
+        When provider is 'tei' (the default), map to 'tei-rerank' so the
+        reranker service endpoint (reranker-worker) is used instead of the
+        embedding endpoint (embedding-worker).
+        """
+        if self.provider == "tei":
+            return "tei-rerank"
+        return self.provider
+
     def resolved_api_base(self) -> str:
-        return _resolve_api_base(self.provider, self.api_base)
+        return _resolve_api_base(self.resolved_provider, self.api_base)
 
     @property
     def rerank_endpoint(self) -> str:
         """Full URL for the reranker API endpoint."""
         base = self.resolved_api_base().rstrip("/")
-        if self.provider == "tei":
+        if self.provider in ("tei",):
             return f"{base}/rerank"
+        # siliconflow / cohere / jina / openai-compatible
         return f"{base}/rerank"
 
 
@@ -247,11 +260,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":
-        if self.environment == "prod" and not self.auth.secret_key:
-            raise ValueError(
-                "AUTH_SECRET_KEY must be set in production. "
-                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-            )
+        if self.environment == "prod":
+            if not self.auth.secret_key:
+                raise ValueError(
+                    "AUTH_SECRET_KEY must be set in production. "
+                    "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+                )
+            if self.auth.secret_key.startswith("changeme"):
+                raise ValueError(
+                    "AUTH_SECRET_KEY must not use the placeholder 'changeme' in production. "
+                    "Generate a strong secret with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+                )
+            if self.debug:
+                raise ValueError("DEBUG must be False in production")
         return self
 
     @cached_property

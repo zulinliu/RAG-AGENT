@@ -45,6 +45,22 @@ class CrossEncoderReranker:
         self._batch_size = batch_size
         self._api_key = api_key
         self._local_model: Any = None
+        self._client: httpx.AsyncClient | None = None
+
+    async def close(self) -> None:
+        """Close the shared HTTP client."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Get or create the shared HTTP client."""
+        if self._client is None:
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if self._api_key:
+                headers["Authorization"] = f"Bearer {self._api_key}"
+            self._client = httpx.AsyncClient(timeout=60.0, headers=headers)
+        return self._client
 
     # ------------------------------------------------------------------
     # Lazy-load local model
@@ -89,37 +105,34 @@ class CrossEncoderReranker:
         texts = [d.content for d in documents]
         reranked: list[SearchResult] = []
 
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        client = self._get_client()
 
-        async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
-            for start in range(0, len(texts), self._batch_size):
-                batch_texts = texts[start : start + self._batch_size]
-                batch_docs = documents[start : start + self._batch_size]
-                payload = self._build_request(query, batch_texts)
+        for start in range(0, len(texts), self._batch_size):
+            batch_texts = texts[start : start + self._batch_size]
+            batch_docs = documents[start : start + self._batch_size]
+            payload = self._build_request(query, batch_texts)
 
-                try:
-                    resp = await client.post(self._api_url, json=payload)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    results = self._parse_response(data)
-                except Exception:
-                    logger.exception("Rerank API call failed")
+            try:
+                resp = await client.post(self._api_url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                results = self._parse_response(data)
+            except Exception:
+                logger.exception("Rerank API call failed")
+                continue
+
+            for item in results:
+                idx = item["index"]
+                score = item["score"]
+                if score < self._threshold:
                     continue
-
-                for item in results:
-                    idx = item["index"]
-                    score = item["score"]
-                    if score < self._threshold:
-                        continue
-                    reranked.append(
-                        replace(
-                            batch_docs[idx],
-                            score=score,
-                            metadata={**batch_docs[idx].metadata, "rerank_score": score},
-                        )
+                reranked.append(
+                    replace(
+                        batch_docs[idx],
+                        score=score,
+                        metadata={**batch_docs[idx].metadata, "rerank_score": score},
                     )
+                )
 
         reranked.sort(key=lambda r: r.score, reverse=True)
         return reranked[:top_k]

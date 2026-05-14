@@ -224,7 +224,7 @@ class DualIndexer:
             logger.error("Milvus 连接失败: %s", e)
 
     def _ensure_milvus_collection(self) -> None:
-        """确保 Milvus 集合存在。"""
+        """确保 Milvus 集合存在（统一 schema，与 config/milvus/collection.py 保持一致）。"""
         from pymilvus import utility, Collection, FieldSchema, CollectionSchema, DataType
 
         if utility.has_collection(self.milvus_collection):
@@ -232,25 +232,26 @@ class DualIndexer:
 
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=64, is_primary=True),
+            FieldSchema(name="project_id", dtype=DataType.VARCHAR, max_length=64, is_partition_key=True),
             FieldSchema(name="document_id", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="project_id", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="chunk_index", dtype=DataType.INT64),
             FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=8192),
-            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self.vector_dim),
+            FieldSchema(name="chunk_type", dtype=DataType.VARCHAR, max_length=32),
             FieldSchema(name="parent_title", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(name="hierarchy", dtype=DataType.VARCHAR, max_length=1024),
+            FieldSchema(name="hierarchy", dtype=DataType.JSON),
+            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self.vector_dim),
         ]
         schema = CollectionSchema(fields=fields, description="RAG chunks")
         collection = Collection(name=self.milvus_collection, schema=schema)
 
-        # 创建索引
+        # 创建 HNSW 索引（与 config/milvus/collection.py 一致）
         index_params = {
             "metric_type": "COSINE",
-            "index_type": "IVF_FLAT",
-            "params": {"nlist": 1024},
+            "index_type": "HNSW",
+            "params": {"M": 16, "efConstruction": 128},
         }
         collection.create_index(field_name="vector", index_params=index_params)
-        logger.info("Milvus 集合已创建: %s", self.milvus_collection)
+        collection.load()
+        logger.info("Milvus 集合已创建 (HNSW): %s", self.milvus_collection)
 
     def _write_milvus(
         self,
@@ -266,22 +267,22 @@ class DualIndexer:
         ids = []
         doc_ids = []
         project_ids = []
-        chunk_indices = []
         contents = []
+        chunk_types = []
         parent_titles = []
         hierarchies = []
 
-        for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        for i, (chunk, _vec) in enumerate(zip(chunks, vectors)):
             chunk_id = str(uuid.uuid4())
             ids.append(chunk_id)
             doc_ids.append(document_id)
             project_ids.append(project_id)
-            chunk_indices.append(i)
             contents.append(chunk.get("content", "")[:8192])
+            chunk_types.append(chunk.get("metadata", {}).get("chunk_type", "paragraph"))
             parent_titles.append(chunk.get("metadata", {}).get("parent_title", "")[:512])
-            hierarchies.append(chunk.get("metadata", {}).get("hierarchy", "")[:1024])
+            hierarchies.append(chunk.get("metadata", {}).get("hierarchy", []))
 
-        entities = [ids, doc_ids, project_ids, chunk_indices, contents, vectors, parent_titles, hierarchies]
+        entities = [ids, project_ids, doc_ids, contents, chunk_types, parent_titles, hierarchies, vectors]
         self._milvus.insert(entities)
         self._milvus.flush()
         return ids
@@ -291,7 +292,8 @@ class DualIndexer:
         if self._milvus is None:
             return
         # document_id 已在 delete_document 中通过 UUID 验证
-        expr = 'document_id == "' + document_id + '"' 
+        validated_id = str(uuid.UUID(document_id))
+        expr = f'document_id == "{validated_id}"'
         self._milvus.delete(expr)
         self._milvus.flush()
 
@@ -342,6 +344,7 @@ class DualIndexer:
                         "analyzer": "ik_max_word",
                         "search_analyzer": "ik_smart",
                     },
+                    "chunk_type": {"type": "keyword"},
                     "parent_title": {"type": "text", "analyzer": "ik_max_word"},
                     "hierarchy": {"type": "keyword"},
                     "char_count": {"type": "integer"},
@@ -358,29 +361,33 @@ class DualIndexer:
         project_id: str,
         document_id: str,
     ) -> int:
-        """写入 Elasticsearch。"""
+        """写入 Elasticsearch（使用 bulk API 批量索引）。"""
         if self._es is None:
             return 0
 
+        from elasticsearch.helpers import bulk
+
         index_name = f"{self.es_index_prefix}_chunks"
-        count = 0
 
-        for i, chunk in enumerate(chunks):
-            body = {
-                "document_id": document_id,
-                "project_id": project_id,
-                "chunk_index": i,
-                "content": chunk.get("content", ""),
-                "parent_title": chunk.get("metadata", {}).get("parent_title", ""),
-                "hierarchy": chunk.get("metadata", {}).get("hierarchy", ""),
-                "char_count": len(chunk.get("content", "")),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self._es.index(index=index_name, body=body)
-            count += 1
+        def _gen_actions() -> Any:
+            for i, chunk in enumerate(chunks):
+                yield {
+                    "_index": index_name,
+                    "_source": {
+                        "document_id": document_id,
+                        "project_id": project_id,
+                        "chunk_index": i,
+                        "content": chunk.get("content", ""),
+                        "chunk_type": chunk.get("metadata", {}).get("chunk_type", "paragraph"),
+                        "parent_title": chunk.get("metadata", {}).get("parent_title", ""),
+                        "hierarchy": chunk.get("metadata", {}).get("hierarchy", ""),
+                        "char_count": len(chunk.get("content", "")),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                }
 
-        self._es.indices.refresh(index=index_name)
-        return count
+        success, _errors = bulk(self._es, _gen_actions(), refresh=True)
+        return success
 
     def _delete_from_es(self, document_id: str) -> None:
         """从 ES 删除文档。"""
@@ -397,7 +404,10 @@ class DualIndexer:
     # ------------------------------------------------------------------
 
     def _connect_pg(self) -> None:
-        """连接 PostgreSQL。"""
+        """连接 PostgreSQL。
+
+        Schema management is handled by Alembic migrations, not by this module.
+        """
         if self.pg_dsn is None:
             logger.info("未配置 PostgreSQL DSN，跳过 PG 连接")
             return
@@ -409,54 +419,11 @@ class DualIndexer:
                 min_size=2,
                 max_size=10,
             )
-            self._ensure_pg_tables()
             logger.info("PostgreSQL 连接成功")
         except ImportError:
             logger.warning("psycopg 未安装，PG 功能不可用")
         except Exception as e:
             logger.error("PostgreSQL 连接失败: %s", e)
-
-    def _ensure_pg_tables(self) -> None:
-        """确保 PG 表存在。"""
-        if self._pg_pool is None:
-            return
-
-        with self._pg_pool.connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
-                    id VARCHAR(64) PRIMARY KEY,
-                    project_id VARCHAR(64) NOT NULL,
-                    data_source_id VARCHAR(64) NOT NULL,
-                    file_path TEXT NOT NULL,
-                    file_name VARCHAR(512),
-                    mime_type VARCHAR(128),
-                    file_size BIGINT DEFAULT 0,
-                    checksum VARCHAR(128),
-                    chunk_count INTEGER DEFAULT 0,
-                    status VARCHAR(32) DEFAULT 'pending',
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
-                );
-
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id VARCHAR(64) PRIMARY KEY,
-                    document_id VARCHAR(64) REFERENCES documents(id) ON DELETE CASCADE,
-                    project_id VARCHAR(64) NOT NULL,
-                    chunk_index INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    char_count INTEGER DEFAULT 0,
-                    parent_title VARCHAR(512),
-                    hierarchy VARCHAR(1024),
-                    created_at TIMESTAMP DEFAULT NOW()
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id);
-                CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
-                CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
-                CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id);
-            """)
-            conn.commit()
 
     def _update_pg_metadata(
         self,

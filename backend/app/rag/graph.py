@@ -303,7 +303,7 @@ class CRAGPipeline:
     # Node: verify — 引用验证和置信度评分
     # ------------------------------------------------------------------
 
-    def _verify(self, state: QueryState) -> dict:
+    async def _verify(self, state: QueryState) -> dict:
         """引用验证 + 置信度评分。"""
         docs = state.reranked_docs
 
@@ -339,6 +339,61 @@ class CRAGPipeline:
         }
         result = await self._graph.ainvoke(initial_state)
         return result
+
+    async def run_pre_generate(
+        self,
+        query: str,
+        project_id: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> QueryState:
+        """Execute CRAG pipeline up to (but not including) answer generation.
+
+        This runs route -> understand -> retrieve -> grade -> rerank,
+        returning the state ready for token-by-token streaming generation.
+        """
+        state = QueryState(
+            query=query,
+            project_id=project_id,
+            conversation_history=conversation_history or [],
+        )
+
+        # route_query
+        route_result = await self._route_query(state)
+        for k, v in route_result.items():
+            setattr(state, k, v)
+
+        if not state.retrieval_needed:
+            return state
+
+        # understand_query
+        understand_result = await self._understand_query(state)
+        for k, v in understand_result.items():
+            setattr(state, k, v)
+
+        # retrieve (with rewrite retry loop)
+        for _ in range(MAX_REWRITE_RETRIES + 1):
+            retrieve_result = await self._retrieve(state)
+            for k, v in retrieve_result.items():
+                setattr(state, k, v)
+
+            grade_result = await self._grade_documents(state)
+            for k, v in grade_result.items():
+                setattr(state, k, v)
+
+            if state.graded_docs:
+                break
+
+            # rewrite and retry
+            rewrite_result = await self._rewrite_query_node(state)
+            for k, v in rewrite_result.items():
+                setattr(state, k, v)
+
+        # rerank
+        rerank_result = await self._rerank(state)
+        for k, v in rerank_result.items():
+            setattr(state, k, v)
+
+        return state
 
     # ------------------------------------------------------------------
     # Public API: stream execution
