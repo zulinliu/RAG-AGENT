@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
@@ -145,12 +146,13 @@ class CRAGPipeline:
 
     async def _understand_query(self, state: QueryState) -> dict:
         """查询理解和改写。"""
-        rewritten = await self._query_understanding.rewrite_query(
-            state.query, self._llm_client
+        rewritten_task = asyncio.ensure_future(
+            self._query_understanding.rewrite_query(state.query, self._llm_client)
         )
-        intent = await self._query_understanding.classify_intent(
-            state.query, self._llm_client
+        intent_task = asyncio.ensure_future(
+            self._query_understanding.classify_intent(state.query, self._llm_client)
         )
+        rewritten, intent = await asyncio.gather(rewritten_task, intent_task)
         return {
             "rewritten_query": rewritten,
             "intent": intent.value if hasattr(intent, "value") else str(intent),
@@ -189,29 +191,35 @@ class CRAGPipeline:
     # ------------------------------------------------------------------
 
     async def _grade_documents(self, state: QueryState) -> dict:
-        """LLM 二元判断每篇文档的相关性。"""
+        """LLM 二元判断每篇文档的相关性（并发评分）。"""
         if not state.retrieved_docs:
             return {"graded_docs": []}
 
         query_text = state.rewritten_query or state.query
-        graded: list[SearchResult] = []
+        semaphore = asyncio.Semaphore(10)
 
-        for doc in state.retrieved_docs:
+        async def _grade_single(doc: SearchResult) -> SearchResult | None:
             prompt = (
                 "判断以下文档片段是否与用户查询相关。\n"
                 "只输出 RELEVANT 或 IRRELEVANT。\n\n"
                 f"用户查询: {query_text}\n\n"
                 f"文档片段: {doc.content[:500]}"
             )
-            try:
-                result = await self._llm_client.generate(
-                    prompt, temperature=0.0, max_tokens=8
-                )
-                if "RELEVANT" in result.upper():
-                    graded.append(doc)
-            except Exception:
-                logger.exception("grading doc %s failed", doc.chunk_id)
-                continue
+            async with semaphore:
+                try:
+                    result = await self._llm_client.generate(
+                        prompt, temperature=0.0, max_tokens=8
+                    )
+                    if "RELEVANT" in result.upper():
+                        return doc
+                except Exception:
+                    logger.exception("grading doc %s failed", doc.chunk_id)
+            return None
+
+        results = await asyncio.gather(
+            *[_grade_single(doc) for doc in state.retrieved_docs]
+        )
+        graded = [r for r in results if r is not None]
 
         logger.info(
             "grade_documents: %d/%d docs graded relevant",

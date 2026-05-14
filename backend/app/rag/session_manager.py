@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg  # type: ignore[import-untyped]
@@ -45,7 +45,7 @@ class SessionManager:
                 conversation_id,
                 user_id,
                 project_id,
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
             )
         logger.info("created conversation %s for user %s", conversation_id, user_id)
         return conversation_id
@@ -70,11 +70,11 @@ class SessionManager:
                 role,
                 content,
                 json.dumps(metadata or {}, ensure_ascii=False),
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
             )
             await conn.execute(
                 "UPDATE conversations SET updated_at = $1 WHERE id = $2",
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
                 conversation_id,
             )
         return message_id
@@ -90,10 +90,14 @@ class SessionManager:
             rows = await conn.fetch(
                 """
                 SELECT id, role, content, metadata, created_at
-                FROM messages
-                WHERE conversation_id = $1
+                FROM (
+                    SELECT id, role, content, metadata, created_at
+                    FROM messages
+                    WHERE conversation_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                ) sub
                 ORDER BY created_at ASC
-                LIMIT $2
                 """,
                 conversation_id,
                 effective_limit,
@@ -168,7 +172,7 @@ class SessionManager:
                     conversation_id,
                     f"[对话摘要] {summary.strip()}",
                     json.dumps({"type": "summary"}, ensure_ascii=False),
-                    datetime.utcnow(),
+                    datetime.now(timezone.utc),
                 )
         logger.info("compressed conversation %s: %d -> summary", conversation_id, len(old_messages))
 

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["health"])
 
@@ -23,7 +27,8 @@ async def health_check(request: Request) -> JSONResponse:
             await session.execute(text("SELECT 1"))
         checks["postgresql"] = "ok"
     except Exception as exc:
-        checks["postgresql"] = f"error: {exc}"
+        logger.exception("postgresql health check failed")
+        checks["postgresql"] = "error"
 
     # --- Redis ---
     try:
@@ -31,7 +36,8 @@ async def health_check(request: Request) -> JSONResponse:
         await redis_client.ping()
         checks["redis"] = "ok"
     except Exception as exc:
-        checks["redis"] = f"error: {exc}"
+        logger.exception("redis health check failed")
+        checks["redis"] = "error"
 
     # --- Milvus ---
     try:
@@ -50,7 +56,8 @@ async def health_check(request: Request) -> JSONResponse:
         connections.disconnect("health")
         checks["milvus"] = "ok"
     except Exception as exc:
-        checks["milvus"] = f"error: {exc}"
+        logger.exception("milvus health check failed")
+        checks["milvus"] = "error"
 
     # --- Elasticsearch ---
     try:
@@ -67,7 +74,8 @@ async def health_check(request: Request) -> JSONResponse:
         await es.close()
         checks["elasticsearch"] = "ok"
     except Exception as exc:
-        checks["elasticsearch"] = f"error: {exc}"
+        logger.exception("elasticsearch health check failed")
+        checks["elasticsearch"] = "error"
 
     overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
     status_code = 200 if overall == "ok" else 503

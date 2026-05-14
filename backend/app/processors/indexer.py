@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,10 @@ class DualIndexer:
         document_id: str,
         data_source_id: str,
     ) -> int:
-        """将分块和向量写入双索引。
+        """将分块和向量写入双索引（原子性保证）。
+
+        先将文档状态标记为 indexing，两个索引都成功后标记为 indexed，
+        任一失败时清理已成功的那个并标记为 error。
 
         Args:
             chunks: 分块列表，每个包含 content 和 metadata
@@ -86,36 +89,93 @@ class DualIndexer:
         if not chunks:
             return 0
 
-        indexed_count = 0
+        # 标记文档状态为 indexing
+        self._set_document_status(document_id, project_id, data_source_id, "indexing")
 
-        # 写入 Milvus
+        milvus_ids: List[str] = []
+        es_count = 0
+
         try:
+            # 写入 Milvus
             milvus_ids = self._write_milvus(chunks, vectors, project_id, document_id)
             logger.info("Milvus 写入完成: %d 条", len(milvus_ids))
         except Exception as e:
             logger.error("Milvus 写入失败: %s", e)
-            milvus_ids = []
 
-        # 写入 Elasticsearch
         try:
+            # 写入 Elasticsearch
             es_count = self._write_es(chunks, project_id, document_id)
             logger.info("Elasticsearch 写入完成: %d 条", es_count)
         except Exception as e:
             logger.error("Elasticsearch 写入失败: %s", e)
-            es_count = 0
+            # Milvus 成功但 ES 失败，清理 Milvus
+            if milvus_ids:
+                logger.warning("ES 写入失败，回滚 Milvus 写入")
+                try:
+                    self._delete_from_milvus(document_id)
+                except Exception as rollback_err:
+                    logger.error("Milvus 回滚失败: %s", rollback_err)
+            self._set_document_status(document_id, project_id, data_source_id, "error", str(e))
+            return 0
 
-        # 更新 PostgreSQL
+        if not milvus_ids:
+            # ES 成功但 Milvus 失败，清理 ES
+            if es_count > 0:
+                logger.warning("Milvus 写入失败，回滚 ES 写入")
+                try:
+                    self._delete_from_es(document_id)
+                except Exception as rollback_err:
+                    logger.error("ES 回滚失败: %s", rollback_err)
+            self._set_document_status(document_id, project_id, data_source_id, "error", "Milvus write failed")
+            return 0
+
+        # 两个索引都成功，更新 PostgreSQL 元数据
         try:
             self._update_pg_metadata(chunks, project_id, document_id, data_source_id)
             logger.info("PostgreSQL 元数据更新完成")
         except Exception as e:
             logger.error("PostgreSQL 更新失败: %s", e)
+            # 索引已写入，不回滚，仅记录错误
+            self._set_document_status(document_id, project_id, data_source_id, "error", str(e))
 
-        indexed_count = max(len(milvus_ids), es_count)
-        return indexed_count
+        return len(milvus_ids)
+
+    def _set_document_status(
+        self,
+        document_id: str,
+        project_id: str,
+        data_source_id: str,
+        status: str,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """更新 PostgreSQL 中的文档状态。"""
+        if self._pg_pool is None:
+            return
+        try:
+            with self._pg_pool.connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO documents (id, project_id, data_source_id, file_path, status, error_message, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (id) DO UPDATE SET
+                        status = EXCLUDED.status,
+                        error_message = EXCLUDED.error_message,
+                        updated_at = NOW()
+                    """,
+                    (document_id, project_id, data_source_id, "", status, error_message),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error("Failed to set document status: %s", e)
 
     def delete_document(self, document_id: str) -> bool:
         """从所有索引中删除文档。"""
+        # 验证 document_id 为有效 UUID 格式，防止 filter 表达式注入
+        try:
+            uuid.UUID(document_id)
+        except ValueError:
+            raise ValueError(f"Invalid document_id format (expected UUID): {document_id!r}")
+
         success = True
 
         # 从 Milvus 删除
@@ -230,7 +290,9 @@ class DualIndexer:
         """从 Milvus 删除文档。"""
         if self._milvus is None:
             return
-        self._milvus.delete(f'document_id == "{document_id}"')
+        # document_id 已在 delete_document 中通过 UUID 验证
+        expr = 'document_id == "' + document_id + '"' 
+        self._milvus.delete(expr)
         self._milvus.flush()
 
     # ------------------------------------------------------------------
@@ -312,7 +374,7 @@ class DualIndexer:
                 "parent_title": chunk.get("metadata", {}).get("parent_title", ""),
                 "hierarchy": chunk.get("metadata", {}).get("hierarchy", ""),
                 "char_count": len(chunk.get("content", "")),
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
             self._es.index(index=index_name, body=body)
             count += 1

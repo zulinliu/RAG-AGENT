@@ -1,7 +1,9 @@
-"""LLM 客户端 — 通过 HTTP 调用 vLLM 服务 (OpenAI 兼容 API)。"""
+"""LLM client -- calls OpenAI-compatible chat completions via HTTP."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import Any, AsyncGenerator
 
@@ -9,27 +11,29 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "http://localhost:8000/v1"
-DEFAULT_MODEL = "Qwen/Qwen2.5-72B-Instruct"
 DEFAULT_TIMEOUT = 120.0
 DEFAULT_TEMPERATURE = 0.1
 DEFAULT_MAX_TOKENS = 2048
 MAX_RETRIES = 3
+_BASE_DELAY = 1.0  # seconds, doubles on each retry
+
+# HTTP status codes that are worth retrying
+_RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 
 
 class LLMClient:
-    """通过 HTTP 调用 vLLM 服务的 LLM 客户端。"""
+    """LLM client that talks to any OpenAI-compatible chat completions endpoint."""
 
     def __init__(
         self,
-        base_url: str = DEFAULT_BASE_URL,
-        model: str = DEFAULT_MODEL,
-        api_key: str = "EMPTY",
+        base_url: str = "http://localhost:8000/v1",
+        model: str = "Qwen2.5-72B-Instruct",
+        api_key: str = "",
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._api_key = api_key
+        self._api_key = api_key or "EMPTY"
         self._timeout = timeout
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
@@ -44,6 +48,40 @@ class LLMClient:
         await self._client.aclose()
 
     # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        """Return True for transient errors that are worth retrying."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code in _RETRYABLE_STATUS_CODES
+        if isinstance(exc, (httpx.ConnectError, httpx.ReadTimeout, httpx.PoolTimeout)):
+            return True
+        return False
+
+    async def _retry_request(self, method: str, path: str, payload: dict[str, Any]) -> httpx.Response:
+        """Send a request with exponential back-off on transient failures."""
+        last_exc: Exception | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                resp = await self._client.request(method, path, json=payload)
+                resp.raise_for_status()
+                return resp
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_retryable(exc) or attempt == MAX_RETRIES:
+                    raise
+                delay = _BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(
+                    "Request to %s failed (attempt %d/%d), retrying in %.1fs: %s",
+                    path, attempt, MAX_RETRIES, delay, exc,
+                )
+                await asyncio.sleep(delay)
+        # Should be unreachable, but satisfy the type checker.
+        raise last_exc  # type: ignore[misc]
+
+    # ------------------------------------------------------------------
     # Text generation (non-streaming)
     # ------------------------------------------------------------------
 
@@ -54,12 +92,9 @@ class LLMClient:
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> str:
-        """生成文本（非流式）。
+        """Generate text (non-streaming).
 
-        支持两种调用方式:
-          - prompt: 单条提示文本
-          - messages: 对话消息列表
-        二者至少提供一个。
+        Accepts either a single *prompt* string or a *messages* list.
         """
         if messages is None:
             if prompt is None:
@@ -74,27 +109,16 @@ class LLMClient:
             "stream": False,
         }
 
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                resp = await self._client.post("/chat/completions", json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                content = data["choices"][0]["message"]["content"]
-                usage = data.get("usage", {})
-                logger.debug(
-                    "generate: tokens used prompt=%s, completion=%s",
-                    usage.get("prompt_tokens"),
-                    usage.get("completion_tokens"),
-                )
-                return content
-            except Exception:
-                logger.exception(
-                    "generate attempt %d/%d failed", attempt, MAX_RETRIES
-                )
-                if attempt == MAX_RETRIES:
-                    raise
-
-        return ""  # unreachable but satisfies type checker
+        resp = await self._retry_request("POST", "/chat/completions", payload)
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        usage = data.get("usage", {})
+        logger.debug(
+            "generate: tokens used prompt=%s, completion=%s",
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+        )
+        return content
 
     # ------------------------------------------------------------------
     # Streaming generation
@@ -107,7 +131,7 @@ class LLMClient:
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> AsyncGenerator[str, None]:
-        """流式生成文本。"""
+        """Stream generated text chunks."""
         if messages is None:
             if prompt is None:
                 raise ValueError("prompt and messages cannot both be None")
@@ -126,57 +150,46 @@ class LLMClient:
                 "POST", "/chat/completions", json=payload
             ) as response:
                 response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        import json
-                        data = json.loads(data_str)
-                        delta = data["choices"][0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        continue
+                buffer = ""
+                async for chunk in response.aiter_text():
+                    buffer += chunk
+                    # Process complete lines from the buffer
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Handle lines that may or may not have the "data: " prefix
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                        elif line.startswith("data:"):
+                            data_str = line[5:]
+                        else:
+                            data_str = line
+
+                        data_str = data_str.strip()
+                        if data_str == "[DONE]":
+                            return
+                        try:
+                            data = json.loads(data_str)
+                            delta = data["choices"][0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                        except (json.JSONDecodeError, KeyError, IndexError):
+                            continue
         except Exception:
             logger.exception("stream_generate failed")
-            yield "[生成错误，请重试]"
+            yield "[generation error, please retry]"
 
     # ------------------------------------------------------------------
-    # Token counting
+    # Token counting (estimation only)
     # ------------------------------------------------------------------
 
     async def count_tokens(self, text: str) -> int:
-        """调用 vLLM tokenize 端点计算 token 数。"""
-        try:
-            resp = await self._client.post(
-                "/tokenize",
-                json={"model": self._model, "text": text},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("count", len(text))
-        except Exception:
-            logger.exception("tokenize failed, falling back to estimate")
-            return int(len(text) / 1.5)
+        """Estimate token count without calling a model-specific endpoint.
 
-    # ------------------------------------------------------------------
-    # Embedding (convenience)
-    # ------------------------------------------------------------------
-
-    async def embed(self, text: str) -> list[float]:
-        """调用 embedding 端点获取文本向量。"""
-        try:
-            resp = await self._client.post(
-                "/embeddings",
-                json={"model": self._model, "input": text},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["data"][0]["embedding"]
-        except Exception:
-            logger.exception("embedding failed")
-            raise
+        Uses a simple heuristic: ~1.5 characters per token for Chinese-heavy
+        text, which is a reasonable approximation for most modern LLMs.
+        """
+        return int(len(text) / 1.5)

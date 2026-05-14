@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from .chunker import ChineseChunker, Chunk, DocumentType
 from .embedding import EmbeddingService
 from .indexer import DualIndexer
-from .parser import DocumentSection, auto_parse
+from .parser import DocumentSection, SectionType, auto_parse
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +112,9 @@ class DocumentPipeline:
 
             # 步骤 4: 智能分块
             doc_type = ChineseChunker.detect_document_type(sections)
-            if self.chunker.doc_type != doc_type:
-                self.chunker = ChineseChunker(doc_type=doc_type)
+            chunker = ChineseChunker(doc_type=doc_type)
 
-            chunks = self.chunker.chunk(sections)
+            chunks = chunker.chunk(sections)
             if not chunks:
                 logger.warning("分块结果为空: %s", actual_path)
                 return PipelineResult(
@@ -196,14 +195,29 @@ class DocumentPipeline:
                 sha256.update(block)
         return sha256.hexdigest()
 
-    @staticmethod
-    def _is_processed(checksum: str, project_id: str) -> bool:
+    def _is_processed(self, checksum: str, project_id: str) -> bool:
         """检查文档是否已经处理过（基于 checksum）。
 
-        TODO: 实际实现应查询 PostgreSQL 中的 documents 表。
+        查询 PostgreSQL documents 表中是否有相同 checksum 且状态为
+        'indexed' 的记录。
         """
-        # 占位实现，实际应查询数据库
-        return False
+        if self.indexer._pg_pool is None:
+            return False
+        try:
+            with self.indexer._pg_pool.connection() as conn:
+                result = conn.execute(
+                    """
+                    SELECT 1 FROM documents
+                    WHERE project_id = %s AND checksum = %s AND status = 'indexed'
+                    LIMIT 1
+                    """,
+                    (project_id, checksum),
+                )
+                row = result.fetchone()
+                return row is not None
+        except Exception as e:
+            logger.warning("checksum lookup failed: %s", e)
+            return False
 
     @staticmethod
     def _clean_sections(sections: List[DocumentSection]) -> List[DocumentSection]:
@@ -220,7 +234,7 @@ class DocumentPipeline:
             content = content.strip()
 
             # 跳过空内容（标题除外）
-            if not content and section.section_type != DocumentSection.section_type.HEADING:
+            if not content and section.section_type != SectionType.HEADING:
                 continue
 
             cleaned.append(DocumentSection(

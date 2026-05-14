@@ -29,7 +29,7 @@ class User(Base, BaseMixin):
         String(32),
         nullable=False,
         default="user",
-        comment="sys_admin / project_admin / kb_admin / user / readonly",
+        comment="system_admin / project_admin / knowledge_admin / user / readonly",
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -63,7 +63,7 @@ class UserProject(Base, BaseMixin):
         String(32),
         nullable=False,
         default="user",
-        comment="project_admin / kb_admin / user / readonly",
+        comment="project_admin / knowledge_admin / user / readonly",
     )
 
     # relationships

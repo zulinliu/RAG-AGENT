@@ -44,6 +44,8 @@ class AnswerGenerator:
         llm_client: Any | None = None,
     ) -> AnswerResult:
         """生成答案（非流式）。"""
+        if llm_client is None:
+            raise ValueError("llm_client is required for generate_answer but was None")
         messages = self._build_messages(query, context, conversation_history)
         try:
             content = await llm_client.generate(
@@ -64,6 +66,8 @@ class AnswerGenerator:
         llm_client: Any | None = None,
     ) -> AsyncGenerator[str, None]:
         """流式生成答案（SSE 用）。"""
+        if llm_client is None:
+            raise ValueError("llm_client is required for stream_answer but was None")
         messages = self._build_messages(query, context, conversation_history)
         try:
             async for chunk in llm_client.stream_generate(messages=messages):

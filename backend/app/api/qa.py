@@ -8,52 +8,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+
+from app.api.deps import get_current_user
+from app.schemas.qa import AskRequest, FeedbackRequest
+from app.utils.auth import check_project_permission
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/qa", tags=["QA"])
-
-
-# ---------------------------------------------------------------------------
-# Request / Response schemas
-# ---------------------------------------------------------------------------
-
-
-class AskRequest(BaseModel):
-    user_id: str
-    project_id: str
-    query: str = Field(..., min_length=1, max_length=2000)
-    conversation_id: str | None = None
-
-
-class AskResponseSchema(BaseModel):
-    conversation_id: str
-    message_id: str
-    query: str
-    answer: str
-    citations: list[int] = []
-    confidence: float = 0.0
-    sources_used: list[str] = []
-    metadata: dict[str, Any] = {}
-
-
-class FeedbackRequest(BaseModel):
-    message_id: str
-    feedback: str = Field(..., pattern=r"^(thumbs_up|thumbs_down)$")
-
-
-class ConversationItem(BaseModel):
-    conversation_id: str
-    project_id: str
-    created_at: str
-    updated_at: str
-
-
-class ConversationDetail(BaseModel):
-    conversation_id: str
-    project_id: str
-    messages: list[dict[str, Any]] = []
+router = APIRouter(prefix="/qa", tags=["QA"])
 
 
 # ---------------------------------------------------------------------------
@@ -74,42 +36,46 @@ def _get_qa_service(request: Request) -> Any:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/ask", response_model=AskResponseSchema)
-async def ask(req: AskRequest, qa_service: Any = Depends(_get_qa_service)) -> Any:
+@router.post("/ask")
+async def ask(
+    req: AskRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    qa_service: Any = Depends(_get_qa_service),
+) -> Any:
     """同步问答接口。"""
+    check_project_permission(current_user, str(req.project_id))
+    user_id = current_user["user_id"]
+
     try:
         result = await qa_service.ask(
-            user_id=req.user_id,
-            project_id=req.project_id,
-            query=req.query,
-            conversation_id=req.conversation_id,
+            user_id=user_id,
+            project_id=str(req.project_id),
+            query=req.question,
+            conversation_id=str(req.conversation_id) if req.conversation_id else None,
         )
-        return AskResponseSchema(
-            conversation_id=result.conversation_id,
-            message_id=result.message_id,
-            query=result.query,
-            answer=result.answer,
-            citations=result.citations,
-            confidence=result.confidence,
-            sources_used=result.sources_used,
-            metadata=result.metadata,
-        )
+        return result
     except Exception:
         logger.exception("ask endpoint failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/stream")
-async def stream_ask(req: AskRequest, qa_service: Any = Depends(_get_qa_service)) -> StreamingResponse:
+async def stream_ask(
+    req: AskRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    qa_service: Any = Depends(_get_qa_service),
+) -> StreamingResponse:
     """SSE 流式问答接口。"""
+    check_project_permission(current_user, str(req.project_id))
+    user_id = current_user["user_id"]
 
     async def event_generator() -> Any:
         try:
             async for event in qa_service.stream_ask(
-                user_id=req.user_id,
-                project_id=req.project_id,
-                query=req.query,
-                conversation_id=req.conversation_id,
+                user_id=user_id,
+                project_id=str(req.project_id),
+                query=req.question,
+                conversation_id=str(req.conversation_id) if req.conversation_id else None,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
@@ -129,29 +95,35 @@ async def stream_ask(req: AskRequest, qa_service: Any = Depends(_get_qa_service)
     )
 
 
-@router.get("/conversations", response_model=list[ConversationItem])
+@router.get("/conversations")
 async def list_conversations(
-    user_id: str,
     project_id: str | None = None,
     limit: int = 20,
+    current_user: dict[str, Any] = Depends(get_current_user),
     qa_service: Any = Depends(_get_qa_service),
 ) -> Any:
     """获取用户对话列表。"""
+    user_id = current_user["user_id"]
+
+    if project_id is not None:
+        check_project_permission(current_user, project_id)
+
     try:
         conversations = await qa_service._session.list_conversations(
             user_id=user_id,
             project_id=project_id,
             limit=min(limit, 100),
         )
-        return [ConversationItem(**c) for c in conversations]
+        return conversations
     except Exception:
         logger.exception("list conversations failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
+@router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
     qa_service: Any = Depends(_get_qa_service),
 ) -> Any:
     """获取对话详情。"""
@@ -159,11 +131,10 @@ async def get_conversation(
         messages = await qa_service._session.get_history(conversation_id)
         if not messages:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        return ConversationDetail(
-            conversation_id=conversation_id,
-            project_id="",
-            messages=messages,
-        )
+        return {
+            "conversation_id": conversation_id,
+            "messages": messages,
+        }
     except HTTPException:
         raise
     except Exception:
@@ -174,11 +145,12 @@ async def get_conversation(
 @router.post("/feedback")
 async def submit_feedback(
     req: FeedbackRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
     qa_service: Any = Depends(_get_qa_service),
 ) -> dict[str, str]:
-    """提交用户反馈 (thumbs_up / thumbs_down)。"""
+    """提交用户反馈。"""
     try:
-        await qa_service.submit_feedback(req.message_id, req.feedback)
+        await qa_service.submit_feedback(str(req.message_id), req.rating)
         return {"status": "ok"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
