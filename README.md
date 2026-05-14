@@ -155,31 +155,80 @@ npm run dev
 - 后端API文档：http://localhost:8000/docs
 - 默认管理员：admin / admin123
 
-### 7. LLM 配置
+### 7. LLM/Embedding/Reranker 模型配置
 
-**方式一：私有部署（推荐）**
+系统支持灵活配置LLM、Embedding和Reranker模型，既可本地私有化部署，也可使用第三方API。
+
+#### LLM 配置
+
+**方式一：本地vLLM私有部署**
 
 ```bash
-# 在GPU服务器上启动vLLM
+# GPU服务器上启动vLLM
 python -m vllm.entrypoints.openai.api_server \
   --model Qwen/Qwen2.5-72B-Instruct \
   --tensor-parallel-size 4 \
-  --host 0.0.0.0 \
-  --port 8001
+  --host 0.0.0.0 --port 8001
 ```
-
-更新 `.env`：
-```env
-LLM_API_URL=http://your-gpu-server:8001/v1
-```
-
-**方式二：API调用（快速验证）**
 
 ```env
-LLM_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_API_KEY=your-api-key
-LLM_MODEL_NAME=qwen-plus
+LLM_PROVIDER=local
+LLM_API_BASE=http://your-gpu-server:8001/v1
+LLM_MODEL_NAME=Qwen2.5-72B-Instruct
 ```
+
+**方式二：第三方API（免GPU）**
+
+系统通过 OpenAI 兼容协议支持所有主流国内大模型平台，只需配置 `LLM_PROVIDER`、`LLM_API_BASE`、`LLM_API_KEY`、`LLM_MODEL_NAME`：
+
+| 平台 | LLM_PROVIDER | LLM_API_BASE | LLM_MODEL_NAME | 获取API Key |
+|------|-------------|-------------|----------------|------------|
+| 智谱GLM | `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` | [open.bigmodel.cn](https://open.bigmodel.cn) |
+| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | [platform.deepseek.com](https://platform.deepseek.com) |
+| MiniMax | `minimax` | `https://api.minimax.chat/v1` | `abab6.5s-chat` | [api.minimax.chat](https://api.minimax.chat) |
+| 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `Qwen/Qwen2.5-72B-Instruct` | [cloud.siliconflow.cn](https://cloud.siliconflow.cn) |
+| 通义千问 | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com) |
+| Ollama本地 | `ollama` | `http://localhost:11434/v1` | `qwen2.5:72b` | 无需 |
+
+配置示例（以智谱GLM为例）：
+```env
+LLM_PROVIDER=zhipu
+LLM_API_BASE=https://open.bigmodel.cn/api/paas/v4
+LLM_API_KEY=your-zhipu-api-key
+LLM_MODEL_NAME=glm-4-plus
+```
+
+#### Embedding 配置
+
+```env
+# 本地部署（默认）
+EMBEDDING_PROVIDER=local
+EMBEDDING_API_URL=http://embedding-worker:8100
+EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+
+# 硅基流动API（免GPU）
+EMBEDDING_PROVIDER=siliconflow
+EMBEDDING_API_URL=https://api.siliconflow.cn/v1/embeddings
+EMBEDDING_API_KEY=your-siliconflow-api-key
+EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+```
+
+#### Reranker 配置
+
+```env
+# 本地部署（默认）
+RERANKER_PROVIDER=local
+RERANKER_API_URL=http://embedding-worker:8100
+RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+
+# 硅基流动API
+RERANKER_PROVIDER=siliconflow
+RERANKER_API_URL=https://api.siliconflow.cn/v1/rerank
+RERANKER_API_KEY=your-siliconflow-api-key
+RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+```
+
+> **提示**：Embedding和Reranker也可以通过硅基流动、Jina等平台的API调用，避免本地部署GPU需求。系统自动适配 OpenAI 兼容的请求/响应格式。
 
 ## 配置文件详解
 
@@ -188,21 +237,20 @@ LLM_MODEL_NAME=qwen-plus
 ```env
 # ==================== 基础配置 ====================
 ENVIRONMENT=dev                    # 运行环境: dev / test / prod
-LOG_LEVEL=INFO                     # 日志级别: DEBUG / INFO / WARNING / ERROR
-SECRET_KEY=change-this-secret-key  # 应用密钥
+LOG_LEVEL=INFO                     # 日志级别
+CORS_ORIGINS=http://localhost:3000 # 允许的前端域名（逗号分隔）
 
 # ==================== PostgreSQL ====================
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 POSTGRES_USER=ragagent
-POSTGRES_PASSWORD=ragagent123
+POSTGRES_PASSWORD=ragagent123      # 生产环境必须更换！
 POSTGRES_DB=rag_agent
 
 # ==================== Redis ====================
 REDIS_HOST=redis
 REDIS_PORT=6379
-REDIS_PASSWORD=ragagent123
-REDIS_DB=0
+REDIS_PASSWORD=ragagent123          # 生产环境必须更换！
 
 # ==================== Milvus ====================
 MILVUS_HOST=milvus-standalone
@@ -213,27 +261,35 @@ ES_HOST=http://elasticsearch:9200
 
 # ==================== MinIO ====================
 MINIO_ENDPOINT=minio:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
+MINIO_ACCESS_KEY=minioadmin         # 生产环境必须更换！
+MINIO_SECRET_KEY=minioadmin         # 生产环境必须更换！
 MINIO_BUCKET=rag-docs
 
 # ==================== LLM ====================
-LLM_API_URL=http://localhost:8001/v1    # vLLM或API地址
-LLM_API_KEY=                             # API密钥（私有部署无需）
-LLM_MODEL_NAME=Qwen2.5-72B-Instruct     # 模型名称
+LLM_PROVIDER=local                  # local/zhipu/deepseek/minimax/siliconflow/ollama/openai
+LLM_API_BASE=http://localhost:8001/v1
+LLM_API_KEY=                        # 第三方API密钥（本地部署无需）
+LLM_MODEL_NAME=Qwen2.5-72B-Instruct
+LLM_MAX_TOKENS=4096
+LLM_TEMPERATURE=0.1
 
 # ==================== Embedding ====================
-EMBEDDING_API_URL=http://embedding-worker:8100  # Embedding服务地址
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5         # Embedding模型
+EMBEDDING_PROVIDER=local            # local/siliconflow/openai
+EMBEDDING_API_URL=http://embedding-worker:8100
+EMBEDDING_API_KEY=                  # 第三方API密钥（可选）
+EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
 
 # ==================== Reranker ====================
-RERANKER_API_URL=http://embedding-worker:8100   # Rerank服务地址
-RERANKER_MODEL=BAAI/bge-reranker-v2-m3         # Rerank模型
+RERANKER_PROVIDER=local             # local/siliconflow/cohere
+RERANKER_API_URL=http://embedding-worker:8100
+RERANKER_API_KEY=                   # 第三方API密钥（可选）
+RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+RERANKER_THRESHOLD=0.3
 
 # ==================== 认证 ====================
-JWT_SECRET=your-jwt-secret-key-change-this
-JWT_ALGORITHM=HS256
-JWT_EXPIRE_MINUTES=1440                  # Token过期时间（分钟）
+AUTH_SECRET_KEY=                    # JWT密钥（必须设置！生产环境不少于32字符）
+AUTH_JWT_ALGORITHM=HS256
+AUTH_ACCESS_TOKEN_EXPIRE_MINUTES=1440
 ```
 
 ### Docker Compose 配置
