@@ -29,16 +29,16 @@ class WordParser(BaseParser):
         doc = Document(file_path)
         sections: List[DocumentSection] = []
 
+        # 构建 O(1) 查找表，避免对每个 element 线性扫描
+        element_map = {p._element: p for p in doc.paragraphs}
+        table_map = {t._element: t for t in doc.tables}
+
         for element in doc.element.body:
             tag = element.tag.split("}")[-1] if "}" in element.tag else element.tag
 
             if tag == "p":
                 # 段落
-                para = None
-                for p in doc.paragraphs:
-                    if p._element is element:
-                        para = p
-                        break
+                para = element_map.get(element)
                 if para is None:
                     continue
 
@@ -68,11 +68,7 @@ class WordParser(BaseParser):
 
             elif tag == "tbl":
                 # 表格
-                table = None
-                for t in doc.tables:
-                    if t._element is element:
-                        table = t
-                        break
+                table = table_map.get(element)
                 if table is None:
                     continue
                 md = self._table_to_markdown(table)

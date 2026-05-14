@@ -150,7 +150,7 @@ async def submit_feedback(
 ) -> dict[str, str]:
     """提交用户反馈。"""
     try:
-        await qa_service.submit_feedback(str(req.message_id), req.rating)
+        await qa_service.submit_feedback(str(req.message_id), req.feedback)
         return {"status": "ok"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

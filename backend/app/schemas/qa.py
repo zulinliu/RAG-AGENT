@@ -26,7 +26,7 @@ class FeedbackRequest(BaseModel):
     """Request body for submitting feedback on an answer."""
 
     message_id: uuid.UUID
-    rating: int = Field(..., ge=1, le=5)
+    feedback: str = Field(..., pattern="^(thumbs_up|thumbs_down)$")
     comment: str | None = Field(default=None, max_length=2000)
 
 

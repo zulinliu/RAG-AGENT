@@ -20,6 +20,7 @@ from app.config import get_settings
 from app.database import engine
 from app.middleware.auth import AuthMiddleware
 from app.middleware.logging import LoggingMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.rag.llm_client import LLMClient
 from app.rag.reranker import CrossEncoderReranker
 from app.rag.retriever import HybridRetriever
@@ -60,7 +61,7 @@ def _init_es_client(settings: Any) -> AsyncElasticsearch | None:
         return None
 
 
-def _build_qa_service(settings: Any) -> QAService | None:
+async def _build_qa_service(settings: Any) -> QAService | None:
     """Build QAService with all RAG dependencies wired up."""
     try:
         # External clients
@@ -117,14 +118,11 @@ def _build_qa_service(settings: Any) -> QAService | None:
 
         # Session manager uses asyncpg directly for conversations/messages
         import asyncpg
-        import asyncio
 
-        pool = asyncio.get_event_loop().run_until_complete(
-            asyncpg.create_pool(
-                dsn=settings.db.url.replace("+asyncpg", ""),
-                min_size=2,
-                max_size=10,
-            )
+        pool = await asyncpg.create_pool(
+            dsn=settings.db.url.replace("+asyncpg", ""),
+            min_size=2,
+            max_size=10,
         )
         session_manager = SessionManager(pool=pool)
 
@@ -156,7 +154,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     # QA service (RAG pipeline + session manager)
-    application.state.qa_service = _build_qa_service(settings)
+    application.state.qa_service = await _build_qa_service(settings)
     if application.state.qa_service is None:
         logger.warning("QA service not available — /ask and /stream endpoints will return 503")
 
@@ -215,6 +213,7 @@ def create_app() -> FastAPI:
     # Custom middleware (added in reverse order: last added = first executed)
     application.add_middleware(AuthMiddleware)
     application.add_middleware(LoggingMiddleware)
+    application.add_middleware(SecurityHeadersMiddleware)
 
     # ---- routes ----
     application.include_router(health_router)

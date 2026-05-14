@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
 from app.rag.graph import CRAGPipeline, QueryState
+from app.rag.query_cache import QueryCache
 from app.rag.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -33,9 +34,11 @@ class QAService:
         self,
         pipeline: CRAGPipeline,
         session_manager: SessionManager,
+        query_cache: QueryCache | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._session = session_manager
+        self._cache = query_cache
 
     async def ask(
         self,
@@ -62,12 +65,45 @@ class QAService:
             conversation_id, "user", query
         )
 
-        # 执行 CRAG 管道
-        state: QueryState = await self._pipeline.run(
-            query=query,
-            project_id=project_id,
-            conversation_history=history,
-        )
+        # 检查查询结果缓存
+        cached_result: dict[str, Any] | None = None
+        if self._cache is not None:
+            cached_result = await self._cache.get_result(query, project_id)
+            if cached_result is not None:
+                logger.info("ask: cache hit for query '%s'", query)
+
+        if cached_result is not None:
+            state = QueryState(
+                query=query,
+                project_id=project_id,
+                conversation_history=history,
+                answer=cached_result["answer"],
+                citations=cached_result.get("citations", []),
+                confidence=cached_result.get("confidence", 0.0),
+                rewritten_query=cached_result.get("rewritten_query", ""),
+                intent=cached_result.get("intent", ""),
+            )
+        else:
+            # 执行 CRAG 管道
+            state: QueryState = await self._pipeline.run(
+                query=query,
+                project_id=project_id,
+                conversation_history=history,
+            )
+
+            # 写入查询结果缓存
+            if self._cache is not None:
+                await self._cache.set_result(
+                    query,
+                    project_id,
+                    {
+                        "answer": state.answer,
+                        "citations": state.citations,
+                        "confidence": state.confidence,
+                        "rewritten_query": state.rewritten_query,
+                        "intent": state.intent,
+                    },
+                )
 
         # 记录助手回复
         assistant_msg_id = await self._session.add_message(
@@ -125,6 +161,12 @@ class QAService:
             project_id=project_id,
             conversation_history=history,
         )
+
+        # 缓存 embedding 向量
+        if self._cache is not None and state.query_embedding:
+            await self._cache.set_embedding(
+                query, project_id, state.query_embedding
+            )
 
         # Emit retrieval metadata event
         yield {
