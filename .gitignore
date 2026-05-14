@@ -32,6 +32,7 @@ htmlcov/
 .dmypy.json
 dmypy.json
 .pytype/
+.ruff_cache/
 
 # ─── IDE ────────────────────────────────────────────────────────────
 .idea/
@@ -47,6 +48,7 @@ node_modules/
 out/
 .nuxt/
 .cache/
+*.tsbuildinfo
 
 # ─── Logs ──────────────────────────────────────────────────────────
 *.log

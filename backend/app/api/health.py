@@ -26,54 +26,44 @@ async def health_check(request: Request) -> JSONResponse:
         async with async_session_factory() as session:
             await session.execute(text("SELECT 1"))
         checks["postgresql"] = "ok"
-    except Exception as exc:
+    except Exception:
         logger.exception("postgresql health check failed")
         checks["postgresql"] = "error"
 
     # --- Redis ---
     try:
         redis_client = request.app.state.redis
-        await redis_client.ping()
-        checks["redis"] = "ok"
-    except Exception as exc:
+        if redis_client is None:
+            checks["redis"] = "error"
+        else:
+            await redis_client.ping()
+            checks["redis"] = "ok"
+    except Exception:
         logger.exception("redis health check failed")
         checks["redis"] = "error"
 
-    # --- Milvus ---
+    # --- Milvus (use shared client from app.state) ---
     try:
-        from pymilvus import connections
-
-        from app.config import get_settings
-
-        settings = get_settings()
-        connections.connect(
-            alias="health",
-            host=settings.milvus.host,
-            port=settings.milvus.port,
-            user=settings.milvus.user or "",
-            password=settings.milvus.password or "",
-        )
-        connections.disconnect("health")
-        checks["milvus"] = "ok"
-    except Exception as exc:
+        milvus_client = request.app.state.milvus_client
+        if milvus_client is None:
+            checks["milvus"] = "error"
+        else:
+            # MilvusClient.list_collections() is a lightweight liveness probe
+            milvus_client.list_collections()
+            checks["milvus"] = "ok"
+    except Exception:
         logger.exception("milvus health check failed")
         checks["milvus"] = "error"
 
-    # --- Elasticsearch ---
+    # --- Elasticsearch (use shared client from app.state) ---
     try:
-        from elasticsearch import AsyncElasticsearch
-
-        from app.config import get_settings
-
-        settings = get_settings()
-        es = AsyncElasticsearch(
-            hosts=[settings.es.hosts],
-            basic_auth=(settings.es.user, settings.es.password),
-        )
-        await es.ping()
-        await es.close()
-        checks["elasticsearch"] = "ok"
-    except Exception as exc:
+        es_client = request.app.state.es_client
+        if es_client is None:
+            checks["elasticsearch"] = "error"
+        else:
+            await es_client.ping()
+            checks["elasticsearch"] = "ok"
+    except Exception:
         logger.exception("elasticsearch health check failed")
         checks["elasticsearch"] = "error"
 

@@ -182,28 +182,43 @@ export function createSSEStream(
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
 
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6).trim();
-            if (data === "[DONE]") {
-              callbacks.onDone();
+        // Process complete events (delimited by blank lines)
+        // Split on double newlines to find event boundaries
+        const eventBlocks = buffer.split("\n\n");
+        // Keep the last (potentially incomplete) block in the buffer
+        buffer = eventBlocks.pop() || "";
+
+        for (const block of eventBlocks) {
+          // Collect all data: lines within a single event
+          const dataLines: string[] = [];
+
+          for (const line of block.split("\n")) {
+            if (line.startsWith("data: ")) {
+              dataLines.push(line.slice(6));
+            }
+          }
+
+          if (dataLines.length === 0) continue;
+
+          // Per SSE spec, multiple data lines are joined with \n
+          const data = dataLines.join("\n").trim();
+
+          if (data === "[DONE]") {
+            callbacks.onDone();
+            return;
+          }
+          try {
+            const parsed = JSON.parse(data) as { text?: string; error?: string };
+            if (parsed.error) {
+              callbacks.onError(new Error(parsed.error));
               return;
             }
-            try {
-              const parsed = JSON.parse(data) as { text?: string; error?: string };
-              if (parsed.error) {
-                callbacks.onError(new Error(parsed.error));
-                return;
-              }
-              if (parsed.text) {
-                callbacks.onChunk(parsed.text);
-              }
-            } catch {
-              // skip malformed chunks
+            if (parsed.text) {
+              callbacks.onChunk(parsed.text);
             }
+          } catch {
+            // skip malformed chunks
           }
         }
       }

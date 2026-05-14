@@ -100,10 +100,10 @@ vim .env
 
 ```env
 # JWT密钥（生产环境必须更换！）
-JWT_SECRET=your-secret-key-change-this-in-production
+AUTH_SECRET_KEY=your-secret-key-change-this-in-production
 
 # 数据库密码
-POSTGRES_PASSWORD=your-secure-password
+DB_PASSWORD=your-secure-password
 
 # Redis密码
 REDIS_PASSWORD=your-redis-password
@@ -136,6 +136,23 @@ alembic upgrade head
 # 启动开发服务器
 python run.py
 ```
+
+
+### 4.1 启动 Celery Worker（文档处理等异步任务）
+
+后端启动后，还需启动 Celery Worker 和 Beat 进程来处理文档同步等异步任务：
+
+```bash
+cd backend
+
+# 启动 Celery Worker（处理异步任务）
+celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+
+# 另开终端，启动 Celery Beat（定时任务调度）
+celery -A app.tasks.celery_app beat --loglevel=info
+```
+
+> Docker Compose 部署时，Worker 和 Beat 已包含在编排中，无需手动启动。
 
 ### 5. 启动前端
 
@@ -446,7 +463,7 @@ RAG-AGENT/
 ### 安全
 
 - **生产环境必须更换** `.env` 中的所有密码和密钥
-- JWT_SECRET 建议使用 `openssl rand -hex 32` 生成
+- AUTH_SECRET_KEY 建议使用 `openssl rand -hex 32` 生成
 - 系统默认关闭Elasticsearch安全模块（xpack.security.enabled=false），内网部署时可接受
 - 所有API接口需要JWT Token认证（除 `/health` 和 `/auth/login`）
 - 数据按项目隔离，用户只能访问有权限的项目数据

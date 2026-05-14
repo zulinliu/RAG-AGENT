@@ -35,6 +35,12 @@ export default function ChatPage() {
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [projectsLoading, setProjectsLoading] = useState(true);
+  const streamingContentRef = useRef("");
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    streamingContentRef.current = streamingContent;
+  }, [streamingContent]);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -155,15 +161,16 @@ export default function ChatPage() {
           },
           onDone: () => {
             setIsStreaming(false);
-            setStreamingContent((prev) => {
+            const content = streamingContentRef.current;
+            if (content) {
               const assistantMessage: ChatMessageData = {
                 id: assistantMessageId,
                 role: "assistant",
-                content: prev,
+                content,
               };
               setMessages((msgs) => [...msgs, assistantMessage]);
-              return "";
-            });
+            }
+            setStreamingContent("");
 
             // Refresh conversations list
             if (currentProject) {
@@ -177,17 +184,16 @@ export default function ChatPage() {
           },
           onError: (error) => {
             setIsStreaming(false);
-            setStreamingContent((prev) => {
-              if (prev) {
-                const assistantMessage: ChatMessageData = {
-                  id: assistantMessageId,
-                  role: "assistant",
-                  content: prev,
-                };
-                setMessages((msgs) => [...msgs, assistantMessage]);
-              }
-              return "";
-            });
+            const content = streamingContentRef.current;
+            if (content) {
+              const assistantMessage: ChatMessageData = {
+                id: assistantMessageId,
+                role: "assistant",
+                content,
+              };
+              setMessages((msgs) => [...msgs, assistantMessage]);
+            }
+            setStreamingContent("");
             const errorMessage: ChatMessageData = {
               id: crypto.randomUUID(),
               role: "assistant",
@@ -204,17 +210,16 @@ export default function ChatPage() {
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
     setIsStreaming(false);
-    setStreamingContent((prev) => {
-      if (prev) {
-        const msg: ChatMessageData = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: prev,
-        };
-        setMessages((msgs) => [...msgs, msg]);
-      }
-      return "";
-    });
+    const content = streamingContentRef.current;
+    if (content) {
+      const msg: ChatMessageData = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content,
+      };
+      setMessages((msgs) => [...msgs, msg]);
+    }
+    setStreamingContent("");
   }, []);
 
   return (

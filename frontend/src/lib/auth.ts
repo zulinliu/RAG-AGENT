@@ -14,5 +14,16 @@ export function removeToken(): void {
 }
 
 export function isAuthenticated(): boolean {
-  return getToken() !== null;
+  const token = getToken();
+  if (!token) return false;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    if (payload.exp && payload.exp * 1000 < Date.now()) {
+      removeToken();
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }

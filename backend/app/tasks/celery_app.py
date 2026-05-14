@@ -1,5 +1,7 @@
 """Celery 应用配置。"""
 
+from __future__ import annotations
+
 import logging
 import os
 
@@ -7,9 +9,25 @@ from celery import Celery
 
 logger = logging.getLogger(__name__)
 
-# 从环境变量读取配置，提供默认值
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
+
+def _build_redis_url(db: int) -> str:
+    """Build a Redis URL from application settings.
+
+    Falls back to ``redis://localhost:6379/<db>`` when settings cannot be
+    loaded (e.g. during unit tests or before .env is available).
+    """
+    try:
+        from app.config import get_settings
+
+        settings = get_settings()
+        password_part = f":{settings.redis.password}@" if settings.redis.password else ""
+        return f"redis://{password_part}{settings.redis.host}:{settings.redis.port}/{db}"
+    except Exception:
+        return f"redis://localhost:6379/{db}"
+
+
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL") or _build_redis_url(0)
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND") or _build_redis_url(1)
 
 # 创建 Celery 应用
 celery_app = Celery(

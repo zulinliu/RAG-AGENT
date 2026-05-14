@@ -12,6 +12,7 @@ import {
   Settings,
 } from "lucide-react";
 import { useAppStore, type Project, type Conversation } from "@/lib/store";
+import { removeToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 
 interface SidebarProps {
@@ -60,7 +61,7 @@ export function ChatSidebar({
   onNewConversation,
 }: SidebarProps) {
   const router = useRouter();
-  const { sidebarCollapsed, setSidebarCollapsed } = useAppStore();
+  const { sidebarCollapsed, setSidebarCollapsed, setUser } = useAppStore();
   const [searchQuery, setSearchQuery] = useState("");
 
   const filteredConversations = useMemo(() => {
@@ -77,7 +78,8 @@ export function ChatSidebar({
   );
 
   const handleLogout = () => {
-    localStorage.removeItem("rag_agent_token");
+    removeToken();
+    setUser(null);
     router.push("/login");
   };
 
