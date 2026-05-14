@@ -71,6 +71,30 @@ class CRAGPipeline:
         self._graph = self._build_graph()
 
     # ------------------------------------------------------------------
+    # Public property accessors (avoid direct private attribute access)
+    # ------------------------------------------------------------------
+
+    @property
+    def context_builder(self) -> ContextBuilder:
+        return self._context_builder
+
+    @property
+    def answer_generator(self) -> AnswerGenerator:
+        return self._answer_generator
+
+    @property
+    def llm_client(self) -> Any:
+        return self._llm_client
+
+    @property
+    def citation_verifier(self) -> CitationVerifier:
+        return self._citation_verifier
+
+    @property
+    def confidence_scorer(self) -> ConfidenceScorer:
+        return self._confidence_scorer
+
+    # ------------------------------------------------------------------
     # Graph construction
     # ------------------------------------------------------------------
 
@@ -196,14 +220,20 @@ class CRAGPipeline:
             return {"graded_docs": []}
 
         query_text = state.rewritten_query or state.query
-        semaphore = asyncio.Semaphore(10)
+        # 只评分 top-15 文档，减少 LLM 调用量
+        docs_to_grade = state.retrieved_docs[:15]
+        semaphore = asyncio.Semaphore(5)
 
         async def _grade_single(doc: SearchResult) -> SearchResult | None:
+            # 首尾各取 250 字符，避免关键信息在后半段被截断
+            content = doc.content
+            if len(content) > 500:
+                content = content[:250] + "\n...\n" + content[-250:]
             prompt = (
                 "判断以下文档片段是否与用户查询相关。\n"
                 "只输出 RELEVANT 或 IRRELEVANT。\n\n"
                 f"用户查询: {query_text}\n\n"
-                f"文档片段: {doc.content[:500]}"
+                f"文档片段: {content}"
             )
             async with semaphore:
                 try:
@@ -217,14 +247,14 @@ class CRAGPipeline:
             return None
 
         results = await asyncio.gather(
-            *[_grade_single(doc) for doc in state.retrieved_docs]
+            *[_grade_single(doc) for doc in docs_to_grade]
         )
         graded = [r for r in results if r is not None]
 
         logger.info(
             "grade_documents: %d/%d docs graded relevant",
             len(graded),
-            len(state.retrieved_docs),
+            len(docs_to_grade),
         )
         return {"graded_docs": graded}
 

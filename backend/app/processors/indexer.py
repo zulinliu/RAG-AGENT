@@ -67,6 +67,7 @@ class DualIndexer:
         project_id: str,
         document_id: str,
         data_source_id: str,
+        checksum: str | None = None,
     ) -> int:
         """将分块和向量写入双索引（原子性保证）。
 
@@ -131,7 +132,7 @@ class DualIndexer:
 
         # 两个索引都成功，更新 PostgreSQL 元数据
         try:
-            self._update_pg_metadata(chunks, project_id, document_id, data_source_id)
+            self._update_pg_metadata(chunks, project_id, document_id, data_source_id, checksum)
             logger.info("PostgreSQL 元数据更新完成")
         except Exception as e:
             logger.error("PostgreSQL 更新失败: %s", e)
@@ -346,7 +347,7 @@ class DualIndexer:
                     },
                     "chunk_type": {"type": "keyword"},
                     "parent_title": {"type": "text", "analyzer": "ik_max_word"},
-                    "hierarchy": {"type": "keyword"},
+                    "hierarchy": {"type": "flattened"},
                     "char_count": {"type": "integer"},
                     "created_at": {"type": "date"},
                 },
@@ -431,31 +432,35 @@ class DualIndexer:
         project_id: str,
         document_id: str,
         data_source_id: str,
+        checksum: str | None = None,
     ) -> None:
         """更新 PostgreSQL 中的文档元数据。"""
         if self._pg_pool is None:
             return
 
         with self._pg_pool.connection() as conn:
-            # 更新文档状态
+            # 更新文档状态（含 checksum）
             conn.execute(
                 """
-                INSERT INTO documents (id, project_id, data_source_id, file_path, chunk_count, status, updated_at)
-                VALUES (%s, %s, %s, %s, %s, 'indexed', NOW())
+                INSERT INTO documents (id, project_id, data_source_id, file_path, status, checksum, updated_at)
+                VALUES (%s, %s, %s, %s, 'indexed', %s, NOW())
                 ON CONFLICT (id) DO UPDATE SET
-                    chunk_count = EXCLUDED.chunk_count,
                     status = 'indexed',
+                    checksum = EXCLUDED.checksum,
                     updated_at = NOW()
                 """,
-                (document_id, project_id, data_source_id, "", len(chunks)),
+                (document_id, project_id, data_source_id, "", checksum),
             )
+
+            # 删除旧分块（支持重新索引）
+            conn.execute("DELETE FROM document_chunks WHERE document_id = %s", (document_id,))
 
             # 写入分块信息
             for i, chunk in enumerate(chunks):
                 chunk_id = str(uuid.uuid4())
                 conn.execute(
                     """
-                    INSERT INTO chunks (id, document_id, project_id, chunk_index, content, char_count, parent_title, hierarchy)
+                    INSERT INTO document_chunks (id, document_id, project_id, chunk_index, content, char_count, parent_title, hierarchy)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO NOTHING
                     """,
@@ -478,6 +483,6 @@ class DualIndexer:
         if self._pg_pool is None:
             return
         with self._pg_pool.connection() as conn:
-            conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+            conn.execute("DELETE FROM document_chunks WHERE document_id = %s", (document_id,))
             conn.execute("DELETE FROM documents WHERE id = %s", (document_id,))
             conn.commit()

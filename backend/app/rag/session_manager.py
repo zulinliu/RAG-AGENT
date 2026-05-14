@@ -72,19 +72,22 @@ class SessionManager:
         """
         message_id = str(uuid.uuid4())
 
+        # Work on a copy to avoid mutating the caller's dict
+        meta = dict(metadata) if metadata else {}
+
         # Extract known ORM fields from metadata
         sources = None
         feedback = "none"
         confidence_score = None
         remaining_meta = {}
 
-        if metadata:
-            sources = metadata.pop("sources", None) or metadata.pop("citations", None)
-            confidence_score = metadata.pop("confidence", None) or metadata.pop("confidence_score", None)
-            fb = metadata.pop("feedback", None)
+        if meta:
+            sources = meta.pop("sources", None) or meta.pop("citations", None)
+            confidence_score = meta.pop("confidence", None) or meta.pop("confidence_score", None)
+            fb = meta.pop("feedback", None)
             if fb:
                 feedback = fb
-            remaining_meta = {k: v for k, v in metadata.items() if v is not None}
+            remaining_meta = {k: v for k, v in meta.items() if v is not None}
 
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -166,7 +169,7 @@ class SessionManager:
         """当对话历史过长时，压缩早期对话为摘要。"""
         messages = await self.get_history(conversation_id)
         total_chars = sum(len(m["content"]) for m in messages)
-        estimated_tokens = int(total_chars / 1.5)  # 中文约 1.5 字符/token
+        estimated_tokens = int(total_chars / 0.7)  # 中文约 0.7 字符/token
 
         if estimated_tokens <= self._max_context_tokens:
             return
@@ -189,13 +192,14 @@ class SessionManager:
             logger.exception("context compression failed")
             return
 
-        # 删除旧消息，插入摘要
+        # 批量删除旧消息，插入摘要
+        old_ids = [m["message_id"] for m in old_messages]
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                for m in old_messages:
-                    await conn.execute(
-                        "DELETE FROM messages WHERE id = $1", m["message_id"]
-                    )
+                await conn.execute(
+                    "DELETE FROM messages WHERE id = ANY($1::uuid[])",
+                    old_ids,
+                )
                 await conn.execute(
                     """
                     INSERT INTO messages (id, conversation_id, role, content, feedback, metadata, created_at)
@@ -251,6 +255,37 @@ class SessionManager:
             }
             for r in rows
         ]
+
+    async def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        """获取对话基本信息（含 user_id）。"""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, user_id, project_id, created_at, updated_at FROM conversations WHERE id = $1",
+                conversation_id,
+            )
+        if row is None:
+            return None
+        return {
+            "conversation_id": str(row["id"]),
+            "user_id": str(row["user_id"]),
+            "project_id": row["project_id"],
+            "created_at": row["created_at"].isoformat(),
+            "updated_at": row["updated_at"].isoformat(),
+        }
+
+    async def get_message_owner(self, message_id: str) -> str | None:
+        """获取消息所属对话的 user_id。"""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT c.user_id
+                FROM messages m
+                JOIN conversations c ON m.conversation_id = c.id
+                WHERE m.id = $1
+                """,
+                message_id,
+            )
+        return str(row["user_id"]) if row else None
 
     async def add_feedback(
         self,

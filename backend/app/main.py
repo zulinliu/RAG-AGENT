@@ -126,7 +126,16 @@ async def _build_qa_service(settings: Any) -> QAService | None:
         )
         session_manager = SessionManager(pool=pool)
 
-        qa_service = QAService(pipeline=pipeline, session_manager=session_manager)
+        # QueryCache (optional, degrades gracefully if Redis unavailable)
+        query_cache = None
+        try:
+            from app.rag.query_cache import QueryCache
+            query_cache = QueryCache(redis_url=settings.redis.url)
+            await query_cache.init()
+        except Exception:
+            logger.warning("QueryCache init failed, caching disabled")
+
+        qa_service = QAService(pipeline=pipeline, session_manager=session_manager, query_cache=query_cache)
 
         # Store sub-components for cleanup
         qa_service._llm_client = llm_client
@@ -176,6 +185,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         session = getattr(qa_svc, "_session", None)
         if session is not None:
             await session.close()
+        qc = getattr(qa_svc, "_cache", None)
+        if qc is not None:
+            await qc.close()
 
     es = getattr(application.state, "es_client", None)
     if es is not None:
@@ -193,8 +205,8 @@ def create_app() -> FastAPI:
 
     application = FastAPI(
         title=settings.app_name,
-        docs_url=f"{settings.api_prefix}/docs",
-        openapi_url=f"{settings.api_prefix}/openapi.json",
+        docs_url=None if settings.is_production else f"{settings.api_prefix}/docs",
+        openapi_url=None if settings.is_production else f"{settings.api_prefix}/openapi.json",
         lifespan=lifespan,
     )
 

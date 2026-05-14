@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user
 from app.schemas.qa import AskRequest, FeedbackRequest
+from app.services.qa_service import QAService, AskResponse
 from app.utils.auth import check_project_permission
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ router = APIRouter(prefix="/qa", tags=["QA"])
 # ---------------------------------------------------------------------------
 
 
-def _get_qa_service(request: Request) -> Any:
+def _get_qa_service(request: Request) -> QAService:
     """从 app.state 获取 QAService 实例。"""
     service = getattr(request.app.state, "qa_service", None)
     if service is None:
@@ -40,8 +41,8 @@ def _get_qa_service(request: Request) -> Any:
 async def ask(
     req: AskRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
-    qa_service: Any = Depends(_get_qa_service),
-) -> Any:
+    qa_service: QAService = Depends(_get_qa_service),
+) -> AskResponse:
     """同步问答接口。"""
     check_project_permission(current_user, str(req.project_id))
     user_id = current_user["user_id"]
@@ -63,7 +64,7 @@ async def ask(
 async def stream_ask(
     req: AskRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
-    qa_service: Any = Depends(_get_qa_service),
+    qa_service: QAService = Depends(_get_qa_service),
 ) -> StreamingResponse:
     """SSE 流式问答接口。"""
     check_project_permission(current_user, str(req.project_id))
@@ -100,8 +101,8 @@ async def list_conversations(
     project_id: str | None = None,
     limit: int = 20,
     current_user: dict[str, Any] = Depends(get_current_user),
-    qa_service: Any = Depends(_get_qa_service),
-) -> Any:
+    qa_service: QAService = Depends(_get_qa_service),
+) -> list[dict[str, Any]]:
     """获取用户对话列表。"""
     user_id = current_user["user_id"]
 
@@ -124,13 +125,16 @@ async def list_conversations(
 async def get_conversation(
     conversation_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    qa_service: Any = Depends(_get_qa_service),
-) -> Any:
+    qa_service: QAService = Depends(_get_qa_service),
+) -> dict[str, Any]:
     """获取对话详情。"""
     try:
-        messages = await qa_service.get_conversation_history(conversation_id)
-        if not messages:
+        conversation = await qa_service.get_conversation(conversation_id)
+        if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
+        if conversation["user_id"] != current_user["user_id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
+        messages = await qa_service.get_conversation_history(conversation_id)
         return {
             "conversation_id": conversation_id,
             "messages": messages,
@@ -146,12 +150,19 @@ async def get_conversation(
 async def submit_feedback(
     req: FeedbackRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
-    qa_service: Any = Depends(_get_qa_service),
+    qa_service: QAService = Depends(_get_qa_service),
 ) -> dict[str, str]:
     """提交用户反馈。"""
     try:
+        owner_id = await qa_service.get_message_owner(str(req.message_id))
+        if not owner_id:
+            raise HTTPException(status_code=404, detail="Message not found")
+        if owner_id != current_user["user_id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
         await qa_service.submit_feedback(str(req.message_id), req.feedback)
         return {"status": "ok"}
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:

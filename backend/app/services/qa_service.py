@@ -26,6 +26,18 @@ class AskResponse:
     sources_used: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "conversation_id": self.conversation_id,
+            "message_id": self.message_id,
+            "query": self.query,
+            "answer": self.answer,
+            "citations": self.citations,
+            "confidence": self.confidence,
+            "sources_used": self.sources_used,
+            "metadata": self.metadata,
+        }
+
 
 class QAService:
     """QA 编排服务，串联 CRAG 管道和对话管理。"""
@@ -58,7 +70,7 @@ class QAService:
         history = await self._session.get_conversation_history_for_llm(conversation_id)
 
         # 压缩上下文（如需要）
-        await self._session.compress_context(conversation_id, None)
+        await self._session.compress_context(conversation_id, self._pipeline.llm_client)
 
         # 记录用户消息
         user_msg_id = await self._session.add_message(
@@ -181,13 +193,13 @@ class QAService:
 
         # Phase 2: Stream token-by-token answer generation
         full_answer = ""
-        context = self._pipeline._context_builder.build_context(state.reranked_docs)
+        context = self._pipeline.context_builder.build_context(state.reranked_docs)
 
-        async for token in self._pipeline._answer_generator.stream_answer(
+        async for token in self._pipeline.answer_generator.stream_answer(
             query=query,
             context=context,
             conversation_history=history,
-            llm_client=self._pipeline._llm_client,
+            llm_client=self._pipeline.llm_client,
         ):
             full_answer += token
             yield {
@@ -197,11 +209,11 @@ class QAService:
             }
 
         # Phase 3: Verify citations and score confidence
-        verification = self._pipeline._citation_verifier.verify(
+        verification = self._pipeline.citation_verifier.verify(
             full_answer, state.reranked_docs
         )
         retrieval_scores = [d.score for d in state.reranked_docs]
-        confidence = self._pipeline._confidence_scorer.score(
+        confidence = self._pipeline.confidence_scorer.score(
             retrieval_scores=retrieval_scores,
             citation_coverage=verification.citation_coverage,
             answer_length=len(full_answer),
@@ -256,3 +268,11 @@ class QAService:
     ) -> list[dict[str, Any]]:
         """获取对话详情。"""
         return await self._session.get_history(conversation_id)
+
+    async def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        """获取对话基本信息（含 user_id）。"""
+        return await self._session.get_conversation(conversation_id)
+
+    async def get_message_owner(self, message_id: str) -> str | None:
+        """获取消息所属对话的 user_id。"""
+        return await self._session.get_message_owner(message_id)

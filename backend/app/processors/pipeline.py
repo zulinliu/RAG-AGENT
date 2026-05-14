@@ -161,6 +161,7 @@ class DocumentPipeline:
                 project_id=project_id,
                 document_id=doc_id,
                 data_source_id=data_source_id,
+                checksum=checksum,
             )
 
             duration = (datetime.now() - start_time).total_seconds() * 1000

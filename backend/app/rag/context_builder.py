@@ -10,7 +10,7 @@ from app.rag.retriever import SearchResult
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONTEXT_TOKENS = 4000
-APPROX_CHARS_PER_TOKEN = 1.5  # 中文约 1.5 字符 / token
+APPROX_CHARS_PER_TOKEN = 0.7  # 中文约 0.7 字符/token（修正偏低估算）
 
 
 class ContextBuilder:

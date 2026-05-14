@@ -104,6 +104,7 @@ class CrossEncoderReranker:
     ) -> list[SearchResult]:
         texts = [d.content for d in documents]
         reranked: list[SearchResult] = []
+        failed_docs: list[SearchResult] = []
 
         client = self._get_client()
 
@@ -118,7 +119,8 @@ class CrossEncoderReranker:
                 data = resp.json()
                 results = self._parse_response(data)
             except Exception:
-                logger.exception("Rerank API call failed")
+                logger.exception("Rerank API call failed, degrading to original scores")
+                failed_docs.extend(batch_docs)
                 continue
 
             for item in results:
@@ -134,6 +136,8 @@ class CrossEncoderReranker:
                     )
                 )
 
+        # 降级：失败批次按原始分数直接返回
+        reranked.extend(failed_docs)
         reranked.sort(key=lambda r: r.score, reverse=True)
         return reranked[:top_k]
 

@@ -33,6 +33,7 @@ def sync_document_task(
     """
     from backend.app.connectors.base import SyncTask
     from backend.app.processors.pipeline import DocumentPipeline
+    from app.config import get_settings
 
     logger.info("开始同步文档: %s (project=%s)", sync_task_data["file_path"], sync_task_data["project_id"])
 
@@ -49,7 +50,7 @@ def sync_document_task(
             extra=sync_task_data.get("extra", {}),
         )
 
-        pipeline = DocumentPipeline()
+        pipeline = DocumentPipeline.from_settings(get_settings())
         result = pipeline.process_document(
             file_path=task.file_path,
             project_id=task.project_id,
@@ -103,17 +104,7 @@ def batch_sync_task(
     sync_tasks: List[Dict[str, Any]],
     project_id: str,
 ) -> Dict[str, Any]:
-    """批量同步任务。
-
-    接收多个 SyncTask，逐个调用 sync_document_task。
-
-    Args:
-        sync_tasks: SyncTask 列表
-        project_id: 项目 ID
-
-    Returns:
-        批量处理结果统计
-    """
+    """批量同步任务 — 并行 dispatch，统一等待。"""
     logger.info("开始批量同步: %d 个文件 (project=%s)", len(sync_tasks), project_id)
 
     results = {
@@ -124,14 +115,16 @@ def batch_sync_task(
         "details": [],
     }
 
+    # 批量 dispatch 所有任务
+    async_results = []
     for task_data in sync_tasks:
+        r = sync_document_task.apply_async(args=[task_data], queue="sync_queue")
+        async_results.append((task_data, r))
+
+    # 并行等待所有结果
+    for task_data, async_result in async_results:
         try:
-            result = sync_document_task.apply_async(
-                args=[task_data],
-                queue="sync_queue",
-            )
-            # 等待结果（带超时）
-            task_result = result.get(timeout=300)
+            task_result = async_result.get(timeout=300)
             status = task_result.get("status", "error")
 
             if status == "success":

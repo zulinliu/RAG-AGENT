@@ -15,6 +15,8 @@ from __future__ import annotations
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 SECURITY_HEADERS: dict[bytes, bytes] = {
+    b"strict-transport-security": b"max-age=31536000; includeSubDomains",
+    b"content-security-policy": b"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'",
     b"x-content-type-options": b"nosniff",
     b"x-frame-options": b"DENY",
     b"referrer-policy": b"strict-origin-when-cross-origin",

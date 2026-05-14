@@ -72,6 +72,11 @@ class Message(Base, BaseMixin):
         nullable=True,
         comment="Model confidence score between 0 and 1",
     )
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=True,
+    )
 
     # relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
