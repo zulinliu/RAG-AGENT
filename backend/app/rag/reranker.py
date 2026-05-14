@@ -1,4 +1,13 @@
-"""Cross-Encoder reranking module."""
+"""Cross-Encoder reranking module with multi-provider support.
+
+Providers:
+  - tei:         HuggingFace TEI Docker (primary, recommended)
+  - siliconflow: 硅基流动 API (cloud, same bge-reranker models)
+  - cohere:      Cohere rerank API
+  - jina:        Jina rerank API
+  - custom:      any compatible endpoint
+  - local-py:    load model in-process via sentence-transformers (dev only)
+"""
 
 from __future__ import annotations
 
@@ -18,24 +27,19 @@ DEFAULT_TOP_K = 10
 
 
 class CrossEncoderReranker:
-    """Cross-Encoder reranker based on bge-reranker-v2-m3.
-
-    Supports two modes:
-      1. Local mode -- loads the model via sentence-transformers.
-      2. HTTP mode -- calls a remote reranker HTTP service.
-
-    Uses HTTP mode when *reranker_url* is provided; falls back to local otherwise.
-    """
+    """Cross-Encoder reranker with multi-provider support."""
 
     def __init__(
         self,
-        reranker_url: str | None = None,
+        provider: str = "tei",
+        api_url: str = "",
         model_name: str = "BAAI/bge-reranker-v2-m3",
         threshold: float = DEFAULT_THRESHOLD,
         batch_size: int = DEFAULT_BATCH_SIZE,
         api_key: str | None = None,
     ) -> None:
-        self._reranker_url = reranker_url
+        self.provider = provider.lower()
+        self._api_url = api_url
         self._model_name = model_name
         self._threshold = threshold
         self._batch_size = batch_size
@@ -64,22 +68,19 @@ class CrossEncoderReranker:
         documents: list[SearchResult],
         top_k: int = DEFAULT_TOP_K,
     ) -> list[SearchResult]:
-        """Rerank search results, returning the top_k highest-scoring documents.
-
-        Documents below the configured threshold are removed.
-        """
+        """Rerank search results, returning the top_k highest-scoring documents."""
         if not documents:
             return []
 
-        if self._reranker_url:
-            return await self._rerank_http(query, documents, top_k)
-        return await self._rerank_local(query, documents, top_k)
+        if self.provider == "local-py":
+            return await self._rerank_local(query, documents, top_k)
+        return await self._rerank_remote(query, documents, top_k)
 
     # ------------------------------------------------------------------
-    # HTTP mode
+    # Remote mode (all providers except local-py)
     # ------------------------------------------------------------------
 
-    async def _rerank_http(
+    async def _rerank_remote(
         self,
         query: str,
         documents: list[SearchResult],
@@ -88,7 +89,7 @@ class CrossEncoderReranker:
         texts = [d.content for d in documents]
         reranked: list[SearchResult] = []
 
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
@@ -96,30 +97,22 @@ class CrossEncoderReranker:
             for start in range(0, len(texts), self._batch_size):
                 batch_texts = texts[start : start + self._batch_size]
                 batch_docs = documents[start : start + self._batch_size]
-                payload: dict[str, Any] = {
-                    "model": self._model_name,
-                    "query": query,
-                    "documents": batch_texts,
-                }
+                payload = self._build_request(query, batch_texts)
+
                 try:
-                    # reranker_url is expected to be the *full* endpoint URL
-                    resp = await client.post(self._reranker_url, json=payload)
+                    resp = await client.post(self._api_url, json=payload)
                     resp.raise_for_status()
                     data = resp.json()
-                    results = data.get("results", [])
+                    results = self._parse_response(data)
                 except Exception:
-                    logger.exception("HTTP rerank call failed")
+                    logger.exception("Rerank API call failed")
                     continue
 
                 for item in results:
-                    idx = item.get("index", 0)
-                    # Support both "relevance_score" and "relevance" field names
-                    score = float(
-                        item.get("relevance_score", item.get("relevance", 0.0))
-                    )
+                    idx = item["index"]
+                    score = item["score"]
                     if score < self._threshold:
                         continue
-
                     reranked.append(
                         replace(
                             batch_docs[idx],
@@ -131,8 +124,48 @@ class CrossEncoderReranker:
         reranked.sort(key=lambda r: r.score, reverse=True)
         return reranked[:top_k]
 
+    def _build_request(self, query: str, documents: list[str]) -> dict[str, Any]:
+        """Build rerank request payload based on provider type."""
+        if self.provider == "tei":
+            return {
+                "query": query,
+                "texts": documents,
+                "return_text": False,
+            }
+        # siliconflow / cohere / jina / openai-compatible / custom
+        return {
+            "model": self._model_name,
+            "query": query,
+            "documents": documents,
+        }
+
+    def _parse_response(self, data: Any) -> list[dict[str, Any]]:
+        """Parse rerank response handling multiple formats."""
+        # TEI format: [{"index": 0, "score": 0.95}, ...]
+        if isinstance(data, list) and len(data) > 0:
+            return [
+                {"index": item.get("index", i), "score": float(item.get("score", 0.0))}
+                for i, item in enumerate(data)
+            ]
+
+        # Cohere / siliconflow / custom format: {"results": [...]}
+        if isinstance(data, dict):
+            results = data.get("results", [])
+            if isinstance(results, list):
+                return [
+                    {
+                        "index": item.get("index", 0),
+                        "score": float(
+                            item.get("relevance_score", item.get("relevance", item.get("score", 0.0)))
+                        ),
+                    }
+                    for item in results
+                ]
+
+        return []
+
     # ------------------------------------------------------------------
-    # Local mode
+    # Local mode (in-process sentence-transformers)
     # ------------------------------------------------------------------
 
     async def _rerank_local(
@@ -155,7 +188,6 @@ class CrossEncoderReranker:
             for idx, score in enumerate(scores):
                 if score < self._threshold:
                     continue
-
                 reranked.append(
                     replace(
                         batch_docs[idx],

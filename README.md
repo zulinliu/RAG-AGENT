@@ -155,13 +155,33 @@ npm run dev
 - 后端API文档：http://localhost:8000/docs
 - 默认管理员：admin / admin123
 
-### 7. LLM/Embedding/Reranker 模型配置
+### 7. LLM / Embedding / Reranker 模型配置
 
-系统支持灵活配置LLM、Embedding和Reranker模型，既可本地私有化部署，也可使用第三方API。
+所有 AI 模型均支持 **本地 Docker 部署** 和 **第三方云 API** 两种方式，通过 `.env` 中的 `*_PROVIDER` 一键切换，无需改代码。
 
-#### LLM 配置
+#### 7.1 Embedding & Reranker 本地部署（CPU，零 GPU 需求）
 
-**方式一：本地vLLM私有部署**
+`docker-compose.yml` 内置了两个 HuggingFace TEI 容器：
+
+| 服务 | 模型 | 参数量 | 镜像 | CPU 内存 | 端口 |
+|------|------|--------|------|---------|------|
+| `embedding-worker` | BAAI/bge-large-zh-v1.5 | ~326M | `ghcr.io/huggingface/text-embeddings-inference:cpu-latest` | ~3 GB | 8100 |
+| `reranker-worker` | BAAI/bge-reranker-v2-m3 | ~568M | `ghcr.io/huggingface/text-embeddings-inference:cpu-latest` | ~3 GB | 8101 |
+
+首次启动自动从 HuggingFace 下载模型（约 2.3 GB），后续启动使用缓存，几秒内就绪。
+
+**无需任何额外配置**，默认 `.env` 已指向本地 TEI 服务：
+
+```env
+EMBEDDING_PROVIDER=tei          # 本地 TEI Docker
+RERANKER_PROVIDER=tei           # 本地 TEI Docker
+```
+
+CPU 推理性能：Embedding ~100-300ms/批次(32条)，Reranker ~150-500ms/批次(50条)，50-200 人规模下完全够用。
+
+#### 7.2 LLM 配置
+
+**方式一：本地 vLLM 私有部署（需 GPU）**
 
 ```bash
 # GPU服务器上启动vLLM
@@ -173,66 +193,100 @@ python -m vllm.entrypoints.openai.api_server \
 
 ```env
 LLM_PROVIDER=local
-LLM_API_BASE=http://your-gpu-server:8001/v1
 LLM_MODEL_NAME=Qwen2.5-72B-Instruct
 ```
 
-**方式二：第三方API（免GPU）**
+**方式二：第三方 API（免 GPU）**
 
-系统通过 OpenAI 兼容协议支持所有主流国内大模型平台，只需配置 `LLM_PROVIDER`、`LLM_API_BASE`、`LLM_API_KEY`、`LLM_MODEL_NAME`：
+系统通过 OpenAI 兼容协议支持所有主流国内大模型平台：
 
-| 平台 | LLM_PROVIDER | LLM_API_BASE | LLM_MODEL_NAME | 获取API Key |
-|------|-------------|-------------|----------------|------------|
-| 智谱GLM | `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` | [open.bigmodel.cn](https://open.bigmodel.cn) |
-| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | [platform.deepseek.com](https://platform.deepseek.com) |
-| MiniMax | `minimax` | `https://api.minimax.chat/v1` | `abab6.5s-chat` | [api.minimax.chat](https://api.minimax.chat) |
-| 硅基流动 | `siliconflow` | `https://api.siliconflow.cn/v1` | `Qwen/Qwen2.5-72B-Instruct` | [cloud.siliconflow.cn](https://cloud.siliconflow.cn) |
-| 通义千问 | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com) |
-| Ollama本地 | `ollama` | `http://localhost:11434/v1` | `qwen2.5:72b` | 无需 |
+| 平台 | LLM_PROVIDER | LLM_MODEL_NAME | 获取API Key |
+|------|-------------|----------------|------------|
+| 智谱GLM | `zhipu` | `glm-4-plus` | [open.bigmodel.cn](https://open.bigmodel.cn) |
+| DeepSeek | `deepseek` | `deepseek-chat` | [platform.deepseek.com](https://platform.deepseek.com) |
+| MiniMax | `minimax` | `MiniMax-Text-01` | [api.minimax.chat](https://api.minimax.chat) |
+| 硅基流动 | `siliconflow` | `Qwen/Qwen2.5-72B-Instruct` | [cloud.siliconflow.cn](https://cloud.siliconflow.cn) |
+| 通义千问 | `openai` | `qwen-plus` | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com) |
+| Ollama本地 | `ollama` | `qwen2.5:72b` | 无需 |
+| NewAPI中转 | `openai` | 按中转平台配置 | 使用中转平台Key |
 
-配置示例（以智谱GLM为例）：
+> `LLM_API_BASE` 在选择已知 provider 时会自动填充，无需手动设置。仅 `custom` 模式需手动指定。
+
+配置示例（智谱GLM）：
 ```env
 LLM_PROVIDER=zhipu
-LLM_API_BASE=https://open.bigmodel.cn/api/paas/v4
 LLM_API_KEY=your-zhipu-api-key
 LLM_MODEL_NAME=glm-4-plus
 ```
 
-#### Embedding 配置
+配置示例（公司 NewAPI 中转）：
+```env
+LLM_PROVIDER=openai
+LLM_API_KEY=your-relay-api-key
+LLM_API_BASE=https://your-newapi-domain.com/v1
+LLM_MODEL_NAME=glm-4-plus
+```
+
+#### 7.3 Embedding 配置
+
+| Provider | 说明 | 需要GPU |
+|----------|------|---------|
+| `tei` | 本地 TEI Docker（默认，推荐） | 否 |
+| `siliconflow` | 硅基流动 API（同款 bge 模型） | 否 |
+| `zhipu` | 智谱AI Embedding-3 | 否 |
+| `openai` | OpenAI 兼容中转 | 否 |
+| `custom` | 自定义 OpenAI 兼容端点 | 否 |
+| `local-py` | 进程内 transformers 加载（开发） | 可选 |
 
 ```env
-# 本地部署（默认）
-EMBEDDING_PROVIDER=local
-EMBEDDING_API_URL=http://embedding-worker:8100
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+# 默认：本地 TEI Docker
+EMBEDDING_PROVIDER=tei
 
-# 硅基流动API（免GPU）
+# 切换到硅基流动 API（零部署）
 EMBEDDING_PROVIDER=siliconflow
-EMBEDDING_API_URL=https://api.siliconflow.cn/v1/embeddings
 EMBEDDING_API_KEY=your-siliconflow-api-key
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+
+# 切换到智谱AI（注意维度不同）
+EMBEDDING_PROVIDER=zhipu
+EMBEDDING_API_KEY=your-zhipu-api-key
+EMBEDDING_MODEL_NAME=embedding-3
+EMBEDDING_DIMENSION=2048
 ```
 
-#### Reranker 配置
+#### 7.4 Reranker 配置
+
+| Provider | 说明 | 需要GPU |
+|----------|------|---------|
+| `tei` | 本地 TEI Docker（默认，推荐） | 否 |
+| `siliconflow` | 硅基流动 API | 否 |
+| `custom` | 自定义端点 | 否 |
+| `local-py` | 进程内加载（开发） | 可选 |
 
 ```env
-# 本地部署（默认）
-RERANKER_PROVIDER=local
-RERANKER_API_URL=http://embedding-worker:8100
-RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+# 默认：本地 TEI Docker
+RERANKER_PROVIDER=tei
 
-# 硅基流动API
+# 切换到硅基流动 API
 RERANKER_PROVIDER=siliconflow
-RERANKER_API_URL=https://api.siliconflow.cn/v1/rerank
 RERANKER_API_KEY=your-siliconflow-api-key
-RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 ```
 
-> **提示**：Embedding和Reranker也可以通过硅基流动、Jina等平台的API调用，避免本地部署GPU需求。系统自动适配 OpenAI 兼容的请求/响应格式。
+#### 7.5 配置切换总结
+
+只需修改 `.env` 中的 3 个 PROVIDER 变量即可在本地/云端之间切换，所有服务自动适配请求格式：
+
+| 场景 | LLM_PROVIDER | EMBEDDING_PROVIDER | RERANKER_PROVIDER |
+|------|-------------|-------------------|-------------------|
+| 全本地（默认） | `local` | `tei` | `tei` |
+| 全云端（零GPU） | `zhipu` | `siliconflow` | `siliconflow` |
+| 混合模式 | `zhipu` | `tei` | `tei` |
+| 中转平台 | `openai` | `openai` | `custom` |
 
 ## 配置文件详解
 
 ### 环境变量配置 (.env)
+
+完整配置模板见 `.env.example`，所有 `*_PROVIDER` 变量控制本地/云端切换：
 
 ```env
 # ==================== 基础配置 ====================
@@ -241,11 +295,11 @@ LOG_LEVEL=INFO                     # 日志级别
 CORS_ORIGINS=http://localhost:3000 # 允许的前端域名（逗号分隔）
 
 # ==================== PostgreSQL ====================
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-POSTGRES_USER=ragagent
-POSTGRES_PASSWORD=ragagent123      # 生产环境必须更换！
-POSTGRES_DB=rag_agent
+DB_HOST=postgres
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=postgres               # 生产环境必须更换！
+DB_DATABASE=rag_agent
 
 # ==================== Redis ====================
 REDIS_HOST=redis
@@ -257,7 +311,7 @@ MILVUS_HOST=milvus-standalone
 MILVUS_PORT=19530
 
 # ==================== Elasticsearch ====================
-ES_HOST=http://elasticsearch:9200
+ES_HOSTS=http://elasticsearch:9200
 
 # ==================== MinIO ====================
 MINIO_ENDPOINT=minio:9000
@@ -266,30 +320,27 @@ MINIO_SECRET_KEY=minioadmin         # 生产环境必须更换！
 MINIO_BUCKET=rag-docs
 
 # ==================== LLM ====================
-LLM_PROVIDER=local                  # local/zhipu/deepseek/minimax/siliconflow/ollama/openai
-LLM_API_BASE=http://localhost:8001/v1
+# provider 自动填充 API_BASE，无需手动设置
+LLM_PROVIDER=local                  # local/zhipu/deepseek/minimax/siliconflow/ollama/openai/custom
 LLM_API_KEY=                        # 第三方API密钥（本地部署无需）
 LLM_MODEL_NAME=Qwen2.5-72B-Instruct
 LLM_MAX_TOKENS=4096
 LLM_TEMPERATURE=0.1
 
 # ==================== Embedding ====================
-EMBEDDING_PROVIDER=local            # local/siliconflow/openai
-EMBEDDING_API_URL=http://embedding-worker:8100
-EMBEDDING_API_KEY=                  # 第三方API密钥（可选）
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+EMBEDDING_PROVIDER=tei              # tei/siliconflow/zhipu/openai/custom/local-py
+EMBEDDING_API_KEY=                  # 第三方API密钥（TEI本地无需）
+EMBEDDING_MODEL_NAME=BAAI/bge-large-zh-v1.5
+EMBEDDING_DIMENSION=1024
 
 # ==================== Reranker ====================
-RERANKER_PROVIDER=local             # local/siliconflow/cohere
-RERANKER_API_URL=http://embedding-worker:8100
-RERANKER_API_KEY=                   # 第三方API密钥（可选）
-RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+RERANKER_PROVIDER=tei               # tei/siliconflow/custom/local-py
+RERANKER_API_KEY=                   # 第三方API密钥（TEI本地无需）
+RERANKER_MODEL_NAME=BAAI/bge-reranker-v2-m3
 RERANKER_THRESHOLD=0.3
 
 # ==================== 认证 ====================
-AUTH_SECRET_KEY=                    # JWT密钥（必须设置！生产环境不少于32字符）
-AUTH_JWT_ALGORITHM=HS256
-AUTH_ACCESS_TOKEN_EXPIRE_MINUTES=1440
+AUTH_SECRET_KEY=                    # JWT密钥（生产环境不少于32字符）
 ```
 
 ### Docker Compose 配置
@@ -403,7 +454,7 @@ RAG-AGENT/
 ### 性能
 
 - **LLM推理是性能瓶颈**：首次提问较慢（模型加载），后续请求受益于vLLM的continuous batching
-- **Embedding服务需要GPU**：bge-large-zh-v1.5 在CPU上推理较慢，建议GPU部署
+- **Embedding/Reranker 不需要 GPU**：bge-large-zh-v1.5 和 bge-reranker-v2-m3 模型很小（<600M 参数），CPU Docker 部署即可，50-200 人规模下性能充足
 - **文档处理耗时**：PDF OCR处理每页约1-3秒，大文档建议在非工作时间全量同步
 - **Milvus内存需求**：每100万1024维向量约需4GB内存
 

@@ -102,6 +102,40 @@ services:
         max-size: "20m"
         max-file: "3"
 
+  # ─── Embedding Worker (CPU) ──────────────────────────────────────────
+  # bge-large-zh-v1.5: ~1.2GB model + ~2GB runtime = ~3GB total
+  embedding-worker:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: "2.0"
+        reservations:
+          memory: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ─── Reranker Worker (CPU) ───────────────────────────────────────────
+  # bge-reranker-v2-m3: ~1.1GB model + ~2GB runtime = ~3GB total
+  reranker-worker:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: "2.0"
+        reservations:
+          memory: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
   backend:
     restart: always
     environment:
@@ -137,18 +171,3 @@ services:
       options:
         max-size: "100m"
         max-file: "10"
-
-  embedding-worker:
-    restart: always
-    deploy:
-      resources:
-        limits:
-          memory: 4g
-          cpus: "2.0"
-        reservations:
-          memory: 2g
-    logging:
-      driver: json-file
-      options:
-        max-size: "100m"
-        max-file: "5"

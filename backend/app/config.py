@@ -83,10 +83,11 @@ class MinioConfig(BaseSettings):
 
 
 # ---------------------------------------------------------------------------
-# Third-party API provider defaults
+# Provider registry — maps provider names to default API base URLs
 # ---------------------------------------------------------------------------
 
 PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+    # LLM providers
     "zhipu": {"api_base": "https://open.bigmodel.cn/api/paas/v4"},
     "minimax": {"api_base": "https://api.minimax.chat/v1"},
     "deepseek": {"api_base": "https://api.deepseek.com/v1"},
@@ -94,52 +95,110 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "ollama": {"api_base": "http://localhost:11434/v1"},
     "openai": {"api_base": "https://api.openai.com/v1"},
     "local": {"api_base": "http://localhost:8000/v1"},
+    # Embedding / Reranker providers (same endpoints, different usage)
+    "tei": {"api_base": "http://embedding-worker:80"},
+    "tei-rerank": {"api_base": "http://reranker-worker:80"},
 }
 
 
+def _resolve_api_base(provider: str, api_base: str) -> str:
+    """Return *api_base*, applying provider defaults when the value is unset."""
+    provider_defaults = PROVIDER_DEFAULTS.get(provider)
+    if provider_defaults and "api_base" in provider_defaults:
+        return provider_defaults["api_base"]
+    return api_base
+
+
 class LLMConfig(BaseSettings):
-    """LLM service configuration with multi-provider support."""
+    """LLM service configuration with multi-provider support.
+
+    Providers:
+      - local:        local vLLM / Ollama instance
+      - zhipu:        智谱AI (GLM series)
+      - minimax:      MiniMax
+      - deepseek:     DeepSeek
+      - siliconflow:  硅基流动
+      - ollama:       Ollama local
+      - openai:       OpenAI or compatible relay
+      - custom:       any OpenAI-compatible endpoint (set LLM_API_BASE manually)
+    """
 
     model_config = SettingsConfigDict(env_prefix="LLM_")
 
-    provider: str = "local"  # local, zhipu, minimax, deepseek, siliconflow, ollama, openai
+    provider: str = "local"
     api_key: str = ""
-    api_base: str = "http://localhost:8000/v1"
+    api_base: str = ""
     model_name: str = "Qwen2.5-72B-Instruct"
     max_tokens: int = 4096
     temperature: float = 0.1
 
     def resolved_api_base(self) -> str:
-        """Return api_base, applying provider defaults if the user left it as the generic default."""
-        provider_defaults = PROVIDER_DEFAULTS.get(self.provider)
-        if provider_defaults and "api_base" in provider_defaults:
-            return provider_defaults["api_base"]
-        return self.api_base
+        return _resolve_api_base(self.provider, self.api_base)
 
 
 class EmbeddingConfig(BaseSettings):
-    """Embedding service configuration."""
+    """Embedding service configuration with multi-provider support.
+
+    Providers:
+      - tei:          HuggingFace TEI Docker (local, recommended)
+      - siliconflow:  硅基流动 API (cloud, same bge models)
+      - zhipu:        智谱AI Embedding-3 (cloud, proprietary)
+      - openai:       OpenAI or compatible relay
+      - custom:       any OpenAI-compatible endpoint (set EMBEDDING_API_BASE manually)
+      - local-py:     load model in-process via transformers (dev only)
+    """
 
     model_config = SettingsConfigDict(env_prefix="EMBEDDING_")
 
-    provider: str = "local"  # local, siliconflow, openai, zhipu
+    provider: str = "tei"
     api_key: str = ""
-    api_url: str = "http://embedding-worker:8100"
+    api_base: str = ""
     model_name: str = "BAAI/bge-large-zh-v1.5"
     dimension: int = 1024
     batch_size: int = 32
 
+    def resolved_api_base(self) -> str:
+        return _resolve_api_base(self.provider, self.api_base)
+
+    @property
+    def embed_endpoint(self) -> str:
+        """Full URL for the embedding API endpoint."""
+        base = self.resolved_api_base().rstrip("/")
+        if self.provider == "tei":
+            return f"{base}/embed"
+        return f"{base}/embeddings"
+
 
 class RerankerConfig(BaseSettings):
-    """Reranker service configuration."""
+    """Reranker service configuration with multi-provider support.
+
+    Providers:
+      - tei:          HuggingFace TEI Docker (local, recommended)
+      - siliconflow:  硅基流动 API (cloud, same bge-reranker models)
+      - cohere:       Cohere rerank API
+      - jina:         Jina rerank API
+      - custom:       any compatible endpoint (set RERANKER_API_BASE manually)
+      - local-py:     load model in-process via sentence-transformers (dev only)
+    """
 
     model_config = SettingsConfigDict(env_prefix="RERANKER_")
 
-    provider: str = "local"  # local, siliconflow, cohere
+    provider: str = "tei"
     api_key: str = ""
-    api_url: str = "http://embedding-worker:8100"
+    api_base: str = ""
     model_name: str = "BAAI/bge-reranker-v2-m3"
     threshold: float = 0.3
+
+    def resolved_api_base(self) -> str:
+        return _resolve_api_base(self.provider, self.api_base)
+
+    @property
+    def rerank_endpoint(self) -> str:
+        """Full URL for the reranker API endpoint."""
+        base = self.resolved_api_base().rstrip("/")
+        if self.provider == "tei":
+            return f"{base}/rerank"
+        return f"{base}/rerank"
 
 
 class AuthConfig(BaseSettings):

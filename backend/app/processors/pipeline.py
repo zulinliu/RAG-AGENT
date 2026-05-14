@@ -53,6 +53,19 @@ class DocumentPipeline:
         self.embedding_service = embedding_service or EmbeddingService()
         self.chunker = chunker or ChineseChunker()
 
+    @classmethod
+    def from_settings(cls, settings: Any) -> "DocumentPipeline":
+        """Create a pipeline instance from application settings."""
+        emb_cfg = settings.embedding
+        embedding_svc = EmbeddingService(
+            provider=emb_cfg.provider,
+            api_url=emb_cfg.embed_endpoint,
+            api_key=emb_cfg.api_key or None,
+            model_name=emb_cfg.model_name,
+            batch_size=emb_cfg.batch_size,
+        )
+        return cls(embedding_service=embedding_svc)
+
     def process_document(
         self,
         file_path: str,

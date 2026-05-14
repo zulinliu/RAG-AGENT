@@ -1,61 +1,55 @@
-"""Embedding service supporting local model and remote HTTP modes."""
+"""Embedding service supporting multiple providers.
+
+Providers:
+  - tei:         HuggingFace TEI Docker (primary, recommended)
+  - siliconflow: 硅基流动 API (cloud, same bge models)
+  - zhipu:       智谱AI Embedding-3 (cloud, proprietary model)
+  - openai:      OpenAI-compatible endpoint (relay / NewAPI)
+  - custom:      any OpenAI-compatible endpoint
+  - local-py:    load model in-process via transformers (dev only)
+"""
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Optional
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingService:
-    """Embedding vectorization service.
-
-    Supports two modes:
-    - remote: calls a remote embedding service via HTTP (default, recommended for production)
-    - local: loads BAAI/bge-large-zh-v1.5 locally for inference (dev/test)
-    """
+    """Embedding vectorization service with multi-provider support."""
 
     def __init__(
         self,
-        mode: str = "remote",
-        # Remote mode parameters
-        api_url: str = "http://embedding-worker:8100",
+        provider: str = "tei",
+        api_url: str = "",
         api_key: Optional[str] = None,
         model_name: str = "BAAI/bge-large-zh-v1.5",
         timeout: int = 60,
-        # Local mode parameters
-        device: str = "cpu",
         batch_size: int = 32,
+        device: str = "cpu",
     ) -> None:
-        self.mode = mode.lower()
+        self.provider = provider.lower()
         self.api_url = api_url
         self.api_key = api_key
         self.model_name = model_name
         self.timeout = timeout
-        self.device = device
         self.batch_size = batch_size
+        self.device = device
         self._model: Optional[Any] = None
         self._tokenizer: Optional[Any] = None
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        """Encode a list of texts into vectors.
-
-        Args:
-            texts: texts to encode
-
-        Returns:
-            List of embedding vectors; dimension depends on the model.
-        """
+        """Encode a list of texts into vectors."""
         if not texts:
             return []
 
-        if self.mode == "remote":
-            return self._encode_remote(texts)
-        elif self.mode == "local":
+        if self.provider == "local-py":
             return self._encode_local(texts)
-        else:
-            raise ValueError(f"Unsupported mode: {self.mode}, use 'remote' or 'local'")
+        return self._encode_remote(texts)
 
     def encode_single(self, text: str) -> list[float]:
         """Encode a single text."""
@@ -63,36 +57,26 @@ class EmbeddingService:
         return result[0] if result else []
 
     # ------------------------------------------------------------------
-    # Remote mode
+    # Remote mode (all providers except local-py)
     # ------------------------------------------------------------------
 
     def _encode_remote(self, texts: list[str]) -> list[list[float]]:
         """Call a remote embedding service via HTTP.
 
-        Supports two response formats:
-        1. OpenAI-compatible: request ``{"model": ..., "input": [...]}``,
-           response ``{"data": [{"embedding": [...]}]}``
-        2. Custom: request ``{"texts": [...]}``,
-           response ``{"vectors": [...]}`` or ``{"embeddings": [...]}``
+        Auto-detects response format:
+        1. TEI format:    ``[{"index": 0, "embedding": [...]}]``
+        2. OpenAI format: ``{"data": [{"embedding": [...]}]}``
+        3. Custom format: ``{"vectors": [...]}`` or ``{"embeddings": [...]}``
         """
-        import requests
-
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
         all_vectors: list[list[float]] = []
+
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
-
-            # Try OpenAI-compatible format first
-            payload: dict[str, Any] = {
-                "model": self.model_name,
-                "input": batch,
-            }
+            payload = self._build_request(batch)
+            headers = self._build_headers()
 
             try:
-                resp = requests.post(
+                resp = httpx.post(
                     self.api_url,
                     json=payload,
                     headers=headers,
@@ -100,42 +84,61 @@ class EmbeddingService:
                 )
                 resp.raise_for_status()
                 data = resp.json()
-
-                # OpenAI-compatible response: {"data": [{"embedding": [...]}]}
-                openai_data = data.get("data")
-                if isinstance(openai_data, list) and len(openai_data) > 0:
-                    first_item = openai_data[0]
-                    if isinstance(first_item, dict) and "embedding" in first_item:
-                        all_vectors.extend(
-                            [item["embedding"] for item in openai_data]
-                        )
-                        continue
-
-                # Custom format fallback: {"vectors": [...]} or {"embeddings": [...]}
-                vectors = (
-                    data.get("vectors")
-                    or data.get("embeddings")
-                    or data.get("data", [])
-                )
-                if isinstance(vectors, list) and len(vectors) > 0:
-                    all_vectors.extend(vectors)
-                else:
-                    raise RuntimeError(
-                        f"Unexpected embedding response format: {list(data.keys())}"
-                    )
-
-            except requests.RequestException as exc:
-                logger.error("Remote embedding service call failed: %s", exc)
+                all_vectors.extend(self._parse_response(data, len(batch)))
+            except httpx.HTTPError as exc:
+                logger.error("Embedding service call failed: %s", exc)
                 raise RuntimeError(f"Embedding service call failed: {exc}") from exc
 
         return all_vectors
 
+    def _build_request(self, batch: list[str]) -> dict[str, Any]:
+        """Build the request payload based on provider type."""
+        if self.provider == "tei":
+            return {"inputs": batch}
+        # OpenAI-compatible (siliconflow, zhipu, openai, custom)
+        return {"model": self.model_name, "input": batch}
+
+    def _build_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _parse_response(self, data: Any, expected_count: int) -> list[list[float]]:
+        """Parse embedding response handling multiple formats."""
+        # TEI format: [{"index": 0, "embedding": [...]}, ...]
+        if isinstance(data, list) and len(data) > 0:
+            first = data[0]
+            if isinstance(first, dict) and "embedding" in first:
+                return [item["embedding"] for item in data]
+
+        # OpenAI format: {"data": [{"embedding": [...]}]}
+        openai_data = data.get("data") if isinstance(data, dict) else None
+        if isinstance(openai_data, list) and len(openai_data) > 0:
+            first = openai_data[0]
+            if isinstance(first, dict) and "embedding" in first:
+                return [item["embedding"] for item in openai_data]
+
+        # Custom format fallback: {"vectors": [...]} or {"embeddings": [...]}
+        if isinstance(data, dict):
+            vectors = (
+                data.get("vectors")
+                or data.get("embeddings")
+                or data.get("data", [])
+            )
+            if isinstance(vectors, list) and len(vectors) > 0:
+                return vectors
+
+        raise RuntimeError(
+            f"Unexpected embedding response format: {type(data).__name__}"
+        )
+
     # ------------------------------------------------------------------
-    # Local mode
+    # Local mode (in-process transformers)
     # ------------------------------------------------------------------
 
     def _encode_local(self, texts: list[str]) -> list[list[float]]:
-        """Encode using a locally loaded model."""
+        """Encode using a locally loaded model (dev only)."""
         self._ensure_model_loaded()
 
         import numpy as np
@@ -145,7 +148,7 @@ class EmbeddingService:
 
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
-            encoded = self._tokenizer(  # type: ignore[misc]
+            encoded = self._tokenizer(
                 batch,
                 padding=True,
                 truncation=True,
@@ -154,16 +157,16 @@ class EmbeddingService:
             )
 
             with torch.no_grad():
-                outputs = self._model(**encoded)  # type: ignore[misc]
+                outputs = self._model(**encoded)
 
-            # Use mean-pooling over the [CLS] token output
             attention_mask = encoded["attention_mask"]
             token_embeddings = outputs.last_hidden_state
-            input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-            embedding = torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(
-                input_mask_expanded.sum(1), min=1e-9
-            )
-            # Normalize
+            input_mask_expanded = attention_mask.unsqueeze(-1).expand(
+                token_embeddings.size()
+            ).float()
+            embedding = torch.sum(
+                token_embeddings * input_mask_expanded, 1
+            ) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
             embedding = torch.nn.functional.normalize(embedding, p=2, dim=1)
             vectors = embedding.cpu().numpy().tolist()
             all_vectors.extend(vectors)
@@ -171,7 +174,6 @@ class EmbeddingService:
         return all_vectors
 
     def _ensure_model_loaded(self) -> None:
-        """Load the local model lazily on first use."""
         if self._model is not None:
             return
 
@@ -179,12 +181,16 @@ class EmbeddingService:
             import torch
             from transformers import AutoModel, AutoTokenizer
 
-            logger.info("Loading embedding model: %s (device=%s)", self.model_name, self.device)
+            logger.info(
+                "Loading local embedding model: %s (device=%s)",
+                self.model_name,
+                self.device,
+            )
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             self._model = AutoModel.from_pretrained(self.model_name)
-            self._model.to(self.device)  # type: ignore[union-attr]
-            self._model.eval()  # type: ignore[union-attr]
-            logger.info("Model loaded successfully")
+            self._model.to(self.device)
+            self._model.eval()
+            logger.info("Local embedding model loaded successfully")
         except ImportError:
             raise ImportError(
                 "Local embedding mode requires transformers and torch: "
