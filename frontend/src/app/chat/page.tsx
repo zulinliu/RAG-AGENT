@@ -60,7 +60,7 @@ export default function ChatPage() {
           setCurrentProject(data[0]);
         }
       })
-      .catch(() => {})
+      .catch((err) => { console.error("Request failed:", err) })
       .finally(() => setProjectsLoading(false));
   }, [currentProject, setCurrentProject]);
 
@@ -79,7 +79,7 @@ export default function ChatPage() {
             role: u.role,
           })
         )
-        .catch(() => {});
+        .catch((err) => { console.error("Request failed:", err) });
     }
   }, [user, setUser]);
 
@@ -94,7 +94,7 @@ export default function ChatPage() {
         project_id: currentProject.id,
       })
       .then(setConversations)
-      .catch(() => {});
+      .catch((err) => { console.error("Request failed:", err) });
   }, [currentProject]);
 
   const handleSelectProject = useCallback(
@@ -179,7 +179,7 @@ export default function ChatPage() {
                   project_id: currentProject.id,
                 })
                 .then(setConversations)
-                .catch(() => {});
+                .catch((err) => { console.error("Request failed:", err) });
             }
           },
           onError: (error) => {

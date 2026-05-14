@@ -262,15 +262,29 @@ async def get_sync_status(
 # Helpers
 # ---------------------------------------------------------------------------
 
+SENSITIVE_CONFIG_KEYS = {"password", "secret", "token", "api_key", "app_secret", "access_key", "secret_key"}
+
+
+def _sanitize_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Mask sensitive fields in data source config."""
+    sanitized = {}
+    for key, value in config.items():
+        if key.lower() in SENSITIVE_CONFIG_KEYS or any(s in key.lower() for s in ("password", "secret", "token", "key")):
+            sanitized[key] = "********" if value else value
+        else:
+            sanitized[key] = value
+    return sanitized
+
 
 def _datasource_to_response(ds: Any) -> DataSourceResponse:
     """Map an ORM DataSource to a response schema."""
+    raw_config = ds.config or {}
     return DataSourceResponse(
         id=ds.id,
         project_id=ds.project_id,
         source_type=ds.source_type,
         name=ds.name,
-        config=ds.config or {},
+        config=_sanitize_config(raw_config),
         sync_status=ds.sync_status,
         last_synced_at=ds.last_synced_at,
         is_active=ds.is_active,

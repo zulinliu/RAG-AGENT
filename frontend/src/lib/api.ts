@@ -113,6 +113,11 @@ export const api = {
       headers,
       body: formData,
     }).then(async (response) => {
+      if (response.status === 401) {
+        removeToken();
+        window.location.href = "/login";
+        throw new ApiError(401, "登录已过期，请重新登录");
+      }
       if (!response.ok) {
         let detail = `上传失败 (${response.status})`;
         try {
@@ -122,6 +127,9 @@ export const api = {
           // use default detail
         }
         throw new ApiError(response.status, detail);
+      }
+      if (response.status === 204) {
+        return undefined as T;
       }
       return response.json() as T;
     });
@@ -159,6 +167,7 @@ export function createSSEStream(
   })
     .then(async (response) => {
       if (!response.ok) {
+        controller.abort();
         let detail = `请求失败 (${response.status})`;
         try {
           const errBody = await response.json();

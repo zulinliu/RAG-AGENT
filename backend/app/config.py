@@ -273,6 +273,12 @@ class Settings(BaseSettings):
                 )
             if self.debug:
                 raise ValueError("DEBUG must be False in production")
+            if self.db.password == "postgres":
+                raise ValueError("DB_PASSWORD must not use default 'postgres' in production")
+            if self.es.password == "changeme":
+                raise ValueError("ES_PASSWORD must not use default 'changeme' in production")
+            if self.minio.secret_key == "minioadmin":
+                raise ValueError("MINIO_SECRET_KEY must not use default 'minioadmin' in production")
         return self
 
     @cached_property

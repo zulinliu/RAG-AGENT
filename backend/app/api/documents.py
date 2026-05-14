@@ -276,7 +276,8 @@ async def upload_document(
     file_type = file_type_map.get(ext, "unknown")
 
     # Upload to MinIO (graceful fallback if MinIO not yet configured)
-    minio_path = f"{project_id}/{uuid.uuid4()}/{file.filename}"
+    safe_filename = os.path.basename(file.filename or "unknown").replace("..", "")
+    minio_path = f"{project_id}/{uuid.uuid4()}/{safe_filename}"
     try:
         from app.core.minio_client import get_minio_client
 

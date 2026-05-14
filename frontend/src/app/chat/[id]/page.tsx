@@ -41,7 +41,7 @@ export default function ConversationPage() {
           api
             .get<Project>(`/projects/${data.project_id}`)
             .then(setCurrentProject)
-            .catch(() => {});
+            .catch((err) => { console.error("Request failed:", err) });
         }
       })
       .catch(() => {
@@ -64,7 +64,7 @@ export default function ConversationPage() {
             role: u.role,
           })
         )
-        .catch(() => {});
+        .catch((err) => { console.error("Request failed:", err) });
     }
   }, [user, setUser]);
 
