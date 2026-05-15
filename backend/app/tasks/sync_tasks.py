@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(
-    name="backend.app.tasks.sync_tasks.sync_document_task",
+    name="app.tasks.sync_tasks.sync_document_task",
     bind=True,
     max_retries=3,
     default_retry_delay=60,
@@ -31,8 +31,8 @@ def sync_document_task(
     Returns:
         处理结果字典
     """
-    from backend.app.connectors.base import SyncTask
-    from backend.app.processors.pipeline import DocumentPipeline
+    from app.connectors.base import SyncTask
+    from app.processors.pipeline import DocumentPipeline
     from app.config import get_settings
 
     logger.info("开始同步文档: %s (project=%s)", sync_task_data["file_path"], sync_task_data["project_id"])
@@ -94,7 +94,7 @@ def sync_document_task(
 
 
 @celery_app.task(
-    name="backend.app.tasks.sync_tasks.batch_sync_task",
+    name="app.tasks.sync_tasks.batch_sync_task",
     bind=True,
     max_retries=2,
     acks_late=True,
@@ -153,7 +153,7 @@ def batch_sync_task(
 
 
 @celery_app.task(
-    name="backend.app.tasks.sync_tasks.scheduled_sync_task",
+    name="app.tasks.sync_tasks.scheduled_sync_task",
     bind=True,
 )
 def scheduled_sync_task(self: Any) -> Dict[str, Any]:
@@ -228,25 +228,79 @@ def scheduled_sync_task(self: Any) -> Dict[str, Any]:
 # ------------------------------------------------------------------
 
 def _get_configured_data_sources() -> List[Dict[str, Any]]:
-    """获取已配置的数据源列表。
+    """从数据库获取所有活跃的、状态为 idle 的数据源配置。"""
+    from app.config import get_settings
 
-    TODO: 从数据库或配置中心读取。
-    """
-    return []
+    settings = get_settings()
+    sync_url = settings.db.sync_url
+
+    try:
+        from sqlalchemy import create_engine, select, text
+        from sqlalchemy.orm import Session
+
+        engine = create_engine(sync_url, pool_size=2, max_overflow=3)
+
+        with Session(engine) as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT id, project_id, source_type, config, name
+                    FROM data_sources
+                    WHERE is_active = true AND sync_status = 'idle'
+                    """
+                )
+            ).fetchall()
+
+            result: List[Dict[str, Any]] = []
+            for row in rows:
+                result.append({
+                    "id": str(row.id),
+                    "project_id": str(row.project_id),
+                    "type": row.source_type,
+                    "config": row.config or {},
+                    "name": row.name,
+                    # Flatten config fields that _create_connector expects at top level
+                    "path": (row.config or {}).get("path", ""),
+                    "server_url": (row.config or {}).get("server_url", ""),
+                    "token": (row.config or {}).get("access_token", ""),
+                    "repo_id": (row.config or {}).get("repo_id", ""),
+                    "sync_dir": (row.config or {}).get("sync_dir", "/"),
+                    "allowed_extensions": (row.config or {}).get("allowed_extensions"),
+                    "protocol": (row.config or {}).get("protocol", "nfs"),
+                    "host": (row.config or {}).get("host"),
+                    "share_name": (row.config or {}).get("share_name"),
+                    "username": (row.config or {}).get("username"),
+                    "password": (row.config or {}).get("password"),
+                    "mount_point": (row.config or {}).get("mount_point"),
+                    "remote_path": (row.config or {}).get("remote_path", "/"),
+                    "mode": (row.config or {}).get("mode", "api"),
+                    "app_key": (row.config or {}).get("app_key"),
+                    "app_secret": (row.config or {}).get("app_secret"),
+                    "cli_path": (row.config or {}).get("cli_path"),
+                })
+
+            engine.dispose()
+            return result
+
+    except Exception as e:
+        logger.error("读取数据源配置失败: %s", e)
+        return []
 
 
 def _create_connector(config: Dict[str, Any]) -> Any:
     """根据配置创建连接器实例。"""
-    from backend.app.connectors.local import LocalConnector
-    from backend.app.connectors.seafile import SeafileConnector
-    from backend.app.connectors.nas import NASConnector
-    from backend.app.connectors.dingtalk import DingTalkConnector
+    from app.connectors.local import LocalConnector
+    from app.connectors.seafile import SeafileConnector
+    from app.connectors.nas import NASConnector
+    from app.connectors.dingtalk import DingTalkConnector
 
     ds_type = config.get("type", "").lower()
     if ds_type == "local":
         return LocalConnector(
             watch_dir=config["path"],
             allowed_extensions=config.get("allowed_extensions"),
+            project_id=config.get("project_id", ""),
+            datasource_id=config.get("id", ""),
         )
     elif ds_type == "seafile":
         return SeafileConnector(

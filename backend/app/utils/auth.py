@@ -6,16 +6,19 @@ and FastAPI dependency classes for RBAC permission checking.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Password hashing
@@ -115,13 +118,32 @@ def verify_token(token: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+async def get_current_user(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+) -> dict[str, Any]:
     """FastAPI dependency that extracts the current user from the JWT token.
+
+    Checks the token blacklist (Redis) before accepting the token.
 
     Returns:
         Token payload dict with keys: user_id, username, role, project_ids.
     """
     payload = verify_token(token)
+
+    # Check token blacklist in Redis
+    jti: str | None = payload.get("jti")
+    if jti is not None:
+        redis = getattr(request.app.state, "redis", None)
+        if redis is not None:
+            is_revoked = await redis.get(f"token_blacklist:{jti}")
+            if is_revoked:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has been revoked",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
     user_id: str | None = payload.get("user_id")
     if user_id is None:
         raise HTTPException(
@@ -130,6 +152,33 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict[str, Any
             headers={"WWW-Authenticate": "Bearer"},
         )
     return payload
+
+
+async def revoke_token(
+    token: str,
+    request: Request,
+) -> None:
+    """Add a JWT token to the Redis blacklist.
+
+    The token is stored with a TTL equal to its remaining validity period,
+    so expired tokens are automatically cleaned up.
+    """
+    payload = verify_token(token)
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if jti is None or exp is None:
+        return
+
+    redis = getattr(request.app.state, "redis", None)
+    if redis is None:
+        logger.warning("Redis unavailable; cannot revoke token")
+        return
+
+    # Calculate remaining TTL in seconds
+    now = datetime.now(timezone.utc).timestamp()
+    remaining_ttl = int(exp - now)
+    if remaining_ttl > 0:
+        await redis.set(f"token_blacklist:{jti}", "1", ex=remaining_ttl)
 
 
 class PermissionChecker:
@@ -179,7 +228,7 @@ class PermissionChecker:
         if self._roles is not None and user_role not in self._roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{user_role}' not authorized. Required: {self._roles}",
+                detail="Insufficient permissions",
             )
 
         if self._project_access:

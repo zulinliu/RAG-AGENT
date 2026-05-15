@@ -6,8 +6,10 @@ reprocessing, and local file upload.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import re
 import uuid
 from typing import Any
 
@@ -15,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.schemas import DetailResponse, UploadResponse
 from app.schemas.document import (
     DocumentChunkResponse,
     DocumentResponse,
@@ -154,7 +157,7 @@ async def delete_document(
     document_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> DetailResponse:
     """Delete a document and its chunks."""
     svc = DocumentService(db)
     try:
@@ -167,7 +170,7 @@ async def delete_document(
 
     check_project_permission(current_user, str(doc.project_id))
     await svc.delete_document(doc.id)
-    return {"detail": "Document deleted"}
+    return DetailResponse(detail="Document deleted")
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +188,7 @@ async def reprocess_document(
     document_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> DetailResponse:
     """Trigger reprocessing of a document."""
     svc = DocumentService(db)
     try:
@@ -198,7 +201,7 @@ async def reprocess_document(
 
     check_project_permission(current_user, str(doc.project_id))
     await svc.reprocess_document(doc.id)
-    return {"detail": "Document reprocessing triggered"}
+    return DetailResponse(detail="Document reprocessing triggered")
 
 
 # ---------------------------------------------------------------------------
@@ -217,13 +220,11 @@ async def upload_document(
     file: UploadFile,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> UploadResponse:
     """Upload a local document file to a project.
 
     Stores the file in MinIO and creates a document record in pending status.
     """
-    import hashlib
-
     from app.config import get_settings
 
     check_project_permission(current_user, str(project_id))
@@ -256,6 +257,27 @@ async def upload_document(
             detail=f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(allowed_extensions))}",
         )
 
+    # Validate content type whitelist
+    allowed_content_types = {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint",
+        "text/markdown",
+        "text/plain",
+        "text/csv",
+        "application/octet-stream",
+    }
+    content_type = (file.content_type or "application/octet-stream").split(";")[0].strip()
+    if content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported content type: {content_type}",
+        )
+
     # Compute content hash for dedup
     content_hash = hashlib.sha256(content).hexdigest()
 
@@ -275,8 +297,11 @@ async def upload_document(
     }
     file_type = file_type_map.get(ext, "unknown")
 
-    # Upload to MinIO (graceful fallback if MinIO not yet configured)
-    safe_filename = os.path.basename(file.filename or "unknown").replace("..", "")
+    # Sanitize filename strictly
+    raw_name = file.filename or "unknown"
+    safe_filename = re.sub(r'[^\w\s.\-]', '_', os.path.basename(raw_name))
+    if not safe_filename or safe_filename.startswith('.'):
+        safe_filename = "unnamed_file"
     minio_path = f"{project_id}/{uuid.uuid4()}/{safe_filename}"
     try:
         from app.core.minio_client import get_minio_client
@@ -308,7 +333,7 @@ async def upload_document(
         status="pending",
     )
     db.add(doc)
-    await db.commit()
+    await db.flush()
 
     # Trigger async processing
     try:
@@ -323,7 +348,7 @@ async def upload_document(
     except ImportError:
         logger.warning("Task module not available; document will not be processed automatically")
 
-    return {"detail": "Document uploaded", "document_id": str(doc.id)}
+    return UploadResponse(detail="Document uploaded", document_id=str(doc.id))
 
 
 # ---------------------------------------------------------------------------
@@ -353,18 +378,19 @@ async def get_document_stats(
 
 
 def _document_to_response(doc: Any) -> DocumentResponse:
-    """Map an ORM Document to a response schema."""
-    return DocumentResponse(
-        id=doc.id,
-        project_id=doc.project_id,
-        data_source_id=doc.data_source_id,
-        title=doc.title,
-        file_path=doc.file_path,
-        file_type=getattr(doc, "file_type", None) or doc.source_type or "",
-        content_hash=doc.content_hash,
-        status=doc.status,
-        chunk_count=0,  # lazy="noload" means chunks are not loaded; use separate count query if needed
-        metadata=doc.metadata_ if isinstance(doc.metadata_, dict) else {},
-        created_at=doc.created_at,
-        updated_at=doc.updated_at,
-    )
+    """Map an ORM Document to a response schema using model_validate."""
+    data = {
+        "id": doc.id,
+        "project_id": doc.project_id,
+        "data_source_id": doc.data_source_id,
+        "title": doc.title,
+        "file_path": doc.file_path,
+        "file_type": getattr(doc, "file_type", None) or doc.source_type or "",
+        "content_hash": doc.content_hash,
+        "status": doc.status,
+        "chunk_count": 0,
+        "metadata": doc.metadata_ if isinstance(doc.metadata_, dict) else {},
+        "created_at": doc.created_at,
+        "updated_at": doc.updated_at,
+    }
+    return DocumentResponse.model_validate(data)

@@ -81,7 +81,7 @@ class PDFParser(BaseParser):
             # 使用 MinerU 提取文本内容
             with tempfile.TemporaryDirectory() as tmp_dir:
                 writer = FileBasedDataWriter(tmp_dir)
-                result = ds.apply_ocr if ds.classify() == "ocr" else ds.apply
+                result = ds.apply
                 content_list = result()
 
                 for idx, item in enumerate(content_list):
@@ -213,11 +213,10 @@ class PDFParser(BaseParser):
         try:
             import fitz  # PyMuPDF
 
-            doc = fitz.open(file_path)
-            for page in doc:
-                pix = page.get_pixmap(dpi=200)
-                images.append(pix.tobytes("png"))
-            doc.close()
+            with fitz.open(file_path) as doc:
+                for page in doc:
+                    pix = page.get_pixmap(dpi=200)
+                    images.append(pix.tobytes("png"))
         except ImportError:
             logger.warning("PyMuPDF 未安装，无法将 PDF 转为图像")
         return images
@@ -282,31 +281,29 @@ class PDFParser(BaseParser):
             return []
 
         sections: List[DocumentSection] = []
-        doc = fitz.open(file_path)
+        with fitz.open(file_path) as doc:
+            for page_idx in range(len(doc)):
+                page = doc[page_idx]
+                # 提取文本块
+                blocks = page.get_text("dict")["blocks"]
+                for block in blocks:
+                    if block["type"] == 0:  # 文本块
+                        text_lines = []
+                        for line in block.get("lines", []):
+                            for span in line.get("spans", []):
+                                text_lines.append(span.get("text", ""))
+                        text = "\n".join(text_lines).strip()
+                        if text:
+                            # 检测标题
+                            is_heading, level = self._detect_heading(block)
+                            sections.append(DocumentSection(
+                                title=text if is_heading else "",
+                                content="" if is_heading else text,
+                                section_type=SectionType.HEADING if is_heading else SectionType.PARAGRAPH,
+                                level=level,
+                                metadata={"page_index": page_idx},
+                            ))
 
-        for page_idx in range(len(doc)):
-            page = doc[page_idx]
-            # 提取文本块
-            blocks = page.get_text("dict")["blocks"]
-            for block in blocks:
-                if block["type"] == 0:  # 文本块
-                    text_lines = []
-                    for line in block.get("lines", []):
-                        for span in line.get("spans", []):
-                            text_lines.append(span.get("text", ""))
-                    text = "\n".join(text_lines).strip()
-                    if text:
-                        # 检测标题
-                        is_heading, level = self._detect_heading(block)
-                        sections.append(DocumentSection(
-                            title=text if is_heading else "",
-                            content="" if is_heading else text,
-                            section_type=SectionType.HEADING if is_heading else SectionType.PARAGRAPH,
-                            level=level,
-                            metadata={"page_index": page_idx},
-                        ))
-
-        doc.close()
         return sections
 
     @staticmethod

@@ -65,7 +65,7 @@ class HybridRetriever:
                 limit=top_k,
                 output_fields=["id", "document_id", "content", "parent_title", "hierarchy", "chunk_type"],
                 filter=f'project_id == "{safe_project_id}"',
-                search_params={"metric_type": "COSINE", "params": {"ef": 64}},
+                search_params={"metric_type": "COSINE", "params": {"ef": max(128, top_k * 2)}},
             )
             search_results: list[SearchResult] = []
             for hits in results:
@@ -118,6 +118,7 @@ class HybridRetriever:
                                     "query": query_text,
                                     "fields": ["content^2", "parent_title^1"],
                                     "type": "best_fields",
+                                    "analyzer": "ik_max_word",
                                 }
                             }
                         ],
@@ -170,11 +171,20 @@ class HybridRetriever:
 
         调用方负责将两路结果送入 RRF 融合。
         """
-        vector_task = self.vector_search(
-            query_embedding, project_id, top_k=vector_top_k
-        )
-        bm25_task = self.bm25_search(query_text, project_id, top_k=bm25_top_k)
-        vector_results, bm25_results = await asyncio.gather(
-            vector_task, bm25_task
-        )
-        return [vector_results, bm25_results]
+        import time
+
+        from app.middleware.metrics import RAG_RETRIEVAL_DURATION
+
+        start = time.monotonic()
+        try:
+            vector_task = self.vector_search(
+                query_embedding, project_id, top_k=vector_top_k
+            )
+            bm25_task = self.bm25_search(query_text, project_id, top_k=bm25_top_k)
+            vector_results, bm25_results = await asyncio.gather(
+                vector_task, bm25_task
+            )
+            return [vector_results, bm25_results]
+        finally:
+            duration = time.monotonic() - start
+            RAG_RETRIEVAL_DURATION.labels(project_id=project_id).observe(duration)

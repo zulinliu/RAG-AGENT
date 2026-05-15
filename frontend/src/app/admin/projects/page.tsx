@@ -15,16 +15,9 @@ import { Input, Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState, Loading } from "@/components/ui/loading";
 import { useToast } from "@/components/ui/toast";
+import type { Project } from "@/lib/types";
 
-interface Project {
-  id: string;
-  name: string;
-  description: string;
-  created_at: string;
-  updated_at: string;
-}
-
-interface DataSource {
+interface ProjectDataSource {
   id: string;
   name: string;
   type: string;
@@ -43,8 +36,10 @@ export default function ProjectsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [detailProject, setDetailProject] = useState<Project | null>(null);
-  const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [dataSources, setDataSources] = useState<ProjectDataSource[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
 
   const [formData, setFormData] = useState<ProjectFormData>({
     name: "",
@@ -82,7 +77,7 @@ export default function ProjectsPage() {
     setDetailProject(project);
     setDetailOpen(true);
     try {
-      const ds = await api.get<DataSource[]>(
+      const ds = await api.get<ProjectDataSource[]>(
         `/projects/${project.id}/datasources`
       );
       setDataSources(ds);
@@ -115,14 +110,22 @@ export default function ProjectsPage() {
     }
   };
 
-  const handleDelete = async (project: Project) => {
-    if (!confirm(`确定要删除项目"${project.name}"吗？`)) return;
+  const handleDelete = (project: Project) => {
+    setDeleteTarget(project);
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await api.delete(`/projects/${project.id}`);
+      await api.delete(`/projects/${deleteTarget.id}`);
       addToast("success", "项目已删除");
       loadProjects();
     } catch {
       addToast("error", "删除失败");
+    } finally {
+      setShowDeleteConfirm(false);
+      setDeleteTarget(null);
     }
   };
 
@@ -319,6 +322,36 @@ export default function ProjectsPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        open={showDeleteConfirm}
+        onClose={() => {
+          setShowDeleteConfirm(false);
+          setDeleteTarget(null);
+        }}
+        title="确认删除"
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowDeleteConfirm(false);
+                setDeleteTarget(null);
+              }}
+            >
+              取消
+            </Button>
+            <Button onClick={confirmDelete}>
+              确认删除
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          确定要删除项目「{deleteTarget?.name}」吗？此操作不可撤销。
+        </p>
       </Modal>
     </div>
   );

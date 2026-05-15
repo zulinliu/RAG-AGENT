@@ -9,20 +9,13 @@ import { ChatInput } from "@/components/chat/input";
 import { EmptyState } from "@/components/ui/loading";
 import { api, createSSEStream } from "@/lib/api";
 import { useAppStore, type Project, type Conversation } from "@/lib/store";
-import type { CitationData } from "@/components/chat/citation";
-
-interface ChatMessageData {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  citations?: CitationData[];
-  confidence?: number;
-  feedback?: "thumbs_up" | "thumbs_down" | null;
-}
+import type { ChatMessageData } from "@/lib/types";
+import { useToast } from "@/components/ui/toast";
 
 export default function ChatPage() {
   const router = useRouter();
   const { currentProject, setCurrentProject, user, setUser } = useAppStore();
+  const { addToast } = useToast();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -36,6 +29,7 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const streamingContentRef = useRef("");
+  const completedRef = useRef(false);
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -52,34 +46,52 @@ export default function ChatPage() {
 
   // Load projects
   useEffect(() => {
+    const controller = new AbortController();
     api
       .get<Project[]>("/projects")
       .then((data) => {
-        setProjects(data);
-        if (data.length > 0 && !currentProject) {
-          setCurrentProject(data[0]);
+        if (!controller.signal.aborted) {
+          setProjects(data);
+          if (data.length > 0 && !currentProject) {
+            setCurrentProject(data[0]);
+          }
         }
       })
-      .catch((err) => { console.error("Request failed:", err) })
-      .finally(() => setProjectsLoading(false));
-  }, [currentProject, setCurrentProject]);
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          addToast("error", "加载项目列表失败");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setProjectsLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, [currentProject, setCurrentProject, addToast]);
 
   // Load user info
   useEffect(() => {
     if (!user) {
+      const controller = new AbortController();
       api
         .get<{ id: string; username: string; email: string; role: string }>(
           "/auth/me"
         )
-        .then((u) =>
-          setUser({
-            id: u.id,
-            username: u.username,
-            email: u.email,
-            role: u.role,
-          })
-        )
-        .catch((err) => { console.error("Request failed:", err) });
+        .then((u) => {
+          if (!controller.signal.aborted) {
+            setUser({
+              id: u.id,
+              username: u.username,
+              email: u.email,
+              role: u.role,
+            });
+          }
+        })
+        .catch(() => {
+          // User info load failure is non-critical, no toast needed
+        });
+      return () => controller.abort();
     }
   }, [user, setUser]);
 
@@ -89,13 +101,21 @@ export default function ChatPage() {
       setConversations([]);
       return;
     }
+    const controller = new AbortController();
     api
       .get<Conversation[]>("/qa/conversations", {
         project_id: currentProject.id,
       })
-      .then(setConversations)
-      .catch((err) => { console.error("Request failed:", err) });
-  }, [currentProject]);
+      .then((data) => {
+        if (!controller.signal.aborted) setConversations(data);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          addToast("error", "加载对话列表失败");
+        }
+      });
+    return () => controller.abort();
+  }, [currentProject, addToast]);
 
   const handleSelectProject = useCallback(
     (projectId: string) => {
@@ -145,6 +165,7 @@ export default function ChatPage() {
       setMessages((prev) => [...prev, userMessage]);
       setIsStreaming(true);
       setStreamingContent("");
+      completedRef.current = false;
 
       const assistantMessageId = crypto.randomUUID();
 
@@ -160,6 +181,7 @@ export default function ChatPage() {
             setStreamingContent((prev) => prev + text);
           },
           onDone: () => {
+            completedRef.current = true;
             setIsStreaming(false);
             const content = streamingContentRef.current;
             if (content) {
@@ -179,10 +201,13 @@ export default function ChatPage() {
                   project_id: currentProject.id,
                 })
                 .then(setConversations)
-                .catch((err) => { console.error("Request failed:", err) });
+                .catch(() => {
+                  addToast("error", "刷新对话列表失败");
+                });
             }
           },
           onError: (error) => {
+            if (completedRef.current) return;
             setIsStreaming(false);
             const content = streamingContentRef.current;
             if (content) {
@@ -204,7 +229,7 @@ export default function ChatPage() {
         }
       );
     },
-    [currentProject, currentConversationId]
+    [currentProject, currentConversationId, addToast]
   );
 
   const handleStop = useCallback(() => {

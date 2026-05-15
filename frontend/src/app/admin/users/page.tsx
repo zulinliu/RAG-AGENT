@@ -8,14 +8,7 @@ import { Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Loading, EmptyState } from "@/components/ui/loading";
 import { useToast } from "@/components/ui/toast";
-
-interface User {
-  id: string;
-  username: string;
-  email: string;
-  role: string;
-  created_at: string;
-}
+import type { User } from "@/lib/types";
 
 const roleOptions = [
   { value: "admin", label: "管理员" },

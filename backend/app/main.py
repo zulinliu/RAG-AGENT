@@ -20,6 +20,8 @@ from app.config import get_settings
 from app.database import engine
 from app.middleware.auth import AuthMiddleware
 from app.middleware.logging import LoggingMiddleware
+from app.middleware.metrics import metrics_endpoint
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.rag.llm_client import LLMClient
 from app.rag.reranker import CrossEncoderReranker
@@ -61,17 +63,9 @@ def _init_es_client(settings: Any) -> AsyncElasticsearch | None:
         return None
 
 
-async def _build_qa_service(settings: Any) -> QAService | None:
+async def _build_qa_service(settings: Any, milvus_client: MilvusClient, es_client: AsyncElasticsearch) -> QAService | None:
     """Build QAService with all RAG dependencies wired up."""
     try:
-        # External clients
-        milvus_client = _init_milvus_client(settings)
-        es_client = _init_es_client(settings)
-
-        if milvus_client is None or es_client is None:
-            logger.warning("Cannot build QAService: Milvus or ES client unavailable")
-            return None
-
         collection_name = f"{settings.milvus.collection_prefix}_chunks"
         es_index = f"{settings.es.index_prefix}_chunks"
 
@@ -97,7 +91,7 @@ async def _build_qa_service(settings: Any) -> QAService | None:
             api_key=settings.llm.api_key,
         )
 
-        # Lazy embedding function wrapper
+        # Embedding function wrapper — encode_single is now async
         from app.processors.embedding import EmbeddingService
         embedding_svc = EmbeddingService(
             provider=settings.embedding.provider,
@@ -107,7 +101,7 @@ async def _build_qa_service(settings: Any) -> QAService | None:
         )
 
         async def embedding_fn(text: str) -> list[float]:
-            return embedding_svc.encode_single(text)
+            return await embedding_svc.encode_single(text)
 
         pipeline = CRAGPipeline(
             retriever=retriever,
@@ -130,7 +124,10 @@ async def _build_qa_service(settings: Any) -> QAService | None:
         query_cache = None
         try:
             from app.rag.query_cache import QueryCache
-            query_cache = QueryCache(redis_url=settings.redis.url)
+            query_cache = QueryCache(
+                redis_url=settings.redis.url,
+                embedding_model_name=settings.embedding.model_name,
+            )
             await query_cache.init()
         except Exception:
             logger.warning("QueryCache init failed, caching disabled")
@@ -162,14 +159,20 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         max_connections=20,
     )
 
-    # QA service (RAG pipeline + session manager)
-    application.state.qa_service = await _build_qa_service(settings)
-    if application.state.qa_service is None:
-        logger.warning("QA service not available — /ask and /stream endpoints will return 503")
+    # Initialize Milvus and ES clients once, shared with QA service and health checks
+    milvus_client = _init_milvus_client(settings)
+    es_client = _init_es_client(settings)
+    application.state.milvus_client = milvus_client
+    application.state.es_client = es_client
 
-    # Milvus and ES clients on app.state for health checks
-    application.state.milvus_client = _init_milvus_client(settings)
-    application.state.es_client = _init_es_client(settings)
+    # QA service (RAG pipeline + session manager) — reuse the same clients
+    if milvus_client is not None and es_client is not None:
+        application.state.qa_service = await _build_qa_service(settings, milvus_client, es_client)
+        if application.state.qa_service is None:
+            logger.warning("QA service not available — /ask and /stream endpoints will return 503")
+    else:
+        application.state.qa_service = None
+        logger.warning("QA service not available — /ask and /stream endpoints will return 503")
 
     # Settings reference (for upload size limit etc.)
     application.state.settings = settings
@@ -179,6 +182,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     # ---- shutdown ----
     qa_svc = getattr(application.state, "qa_service", None)
     if qa_svc is not None:
+        reranker = getattr(qa_svc, "_reranker", None)
+        if reranker is not None and hasattr(reranker, "close"):
+            await reranker.close()
         llm = getattr(qa_svc, "_llm_client", None)
         if llm is not None:
             await llm.close()
@@ -214,6 +220,14 @@ def create_app() -> FastAPI:
     cors_origins = [o.strip() for o in settings.cors.origins.split(",") if o.strip()]
     if settings.is_development and not cors_origins:
         cors_origins = ["http://localhost:3000"]
+    # When credentials are enabled, "*" is not allowed by the browser spec.
+    # If someone accidentally sets "*", replace it with explicit dev origins.
+    if "*" in cors_origins:
+        logger.warning(
+            "CORS_ORIGINS contains '*' — credentials-based requests will fail. "
+            "Replacing with explicit dev origins."
+        )
+        cors_origins = ["http://localhost:3000"]
     application.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -224,12 +238,16 @@ def create_app() -> FastAPI:
 
     # Custom middleware (added in reverse order: last added = first executed)
     application.add_middleware(AuthMiddleware)
+    application.add_middleware(RateLimitMiddleware)
     application.add_middleware(LoggingMiddleware)
     application.add_middleware(SecurityHeadersMiddleware)
 
     # ---- routes ----
     application.include_router(health_router)
     application.include_router(api_router)
+
+    # Prometheus metrics endpoint
+    application.add_route("/metrics", metrics_endpoint, methods=["GET"])
 
     return application
 

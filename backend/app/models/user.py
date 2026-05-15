@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,6 +14,24 @@ from app.models.base import BaseMixin
 
 if TYPE_CHECKING:
     from app.models.project import Project
+
+
+class RoleEnum(str, enum.Enum):
+    """User role enumeration."""
+
+    system_admin = "system_admin"
+    project_admin = "project_admin"
+    knowledge_admin = "knowledge_admin"
+    project_member = "project_member"
+    viewer = "viewer"
+    guest = "guest"
+
+
+class UserStatusEnum(str, enum.Enum):
+    """User status enumeration."""
+
+    active = "active"
+    disabled = "disabled"
 
 
 class User(Base, BaseMixin):
@@ -28,8 +47,14 @@ class User(Base, BaseMixin):
     role: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
-        default="user",
-        comment="system_admin / project_admin / knowledge_admin / user / readonly",
+        default="viewer",
+        comment="system_admin / project_admin / knowledge_admin / project_member / viewer / guest",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=UserStatusEnum.active.value,
+        comment="active / disabled",
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -46,6 +71,9 @@ class UserProject(Base, BaseMixin):
     """Many-to-many association between users and projects with a role."""
 
     __tablename__ = "user_projects"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_user_project"),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

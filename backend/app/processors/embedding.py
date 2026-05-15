@@ -42,26 +42,26 @@ class EmbeddingService:
         self._model: Optional[Any] = None
         self._tokenizer: Optional[Any] = None
 
-    def encode(self, texts: list[str]) -> list[list[float]]:
-        """Encode a list of texts into vectors."""
+    async def encode(self, texts: list[str]) -> list[list[float]]:
+        """Encode a list of texts into vectors (async)."""
         if not texts:
             return []
 
         if self.provider == "local-py":
             return self._encode_local(texts)
-        return self._encode_remote(texts)
+        return await self._encode_remote(texts)
 
-    def encode_single(self, text: str) -> list[float]:
-        """Encode a single text."""
-        result = self.encode([text])
+    async def encode_single(self, text: str) -> list[float]:
+        """Encode a single text (async)."""
+        result = await self.encode([text])
         return result[0] if result else []
 
     # ------------------------------------------------------------------
     # Remote mode (all providers except local-py)
     # ------------------------------------------------------------------
 
-    def _encode_remote(self, texts: list[str]) -> list[list[float]]:
-        """Call a remote embedding service via HTTP.
+    async def _encode_remote(self, texts: list[str]) -> list[list[float]]:
+        """Call a remote embedding service via async HTTP.
 
         Auto-detects response format:
         1. TEI format:    ``[{"index": 0, "embedding": [...]}]``
@@ -70,24 +70,24 @@ class EmbeddingService:
         """
         all_vectors: list[list[float]] = []
 
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i : i + self.batch_size]
-            payload = self._build_request(batch)
-            headers = self._build_headers()
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for i in range(0, len(texts), self.batch_size):
+                batch = texts[i : i + self.batch_size]
+                payload = self._build_request(batch)
+                headers = self._build_headers()
 
-            try:
-                resp = httpx.post(
-                    self.api_url,
-                    json=payload,
-                    headers=headers,
-                    timeout=self.timeout,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                all_vectors.extend(self._parse_response(data, len(batch)))
-            except httpx.HTTPError as exc:
-                logger.error("Embedding service call failed: %s", exc)
-                raise RuntimeError(f"Embedding service call failed: {exc}") from exc
+                try:
+                    resp = await client.post(
+                        self.api_url,
+                        json=payload,
+                        headers=headers,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    all_vectors.extend(self._parse_response(data, len(batch)))
+                except httpx.HTTPError as exc:
+                    logger.error("Embedding service call failed: %s", exc)
+                    raise RuntimeError(f"Embedding service call failed: {exc}") from exc
 
         return all_vectors
 

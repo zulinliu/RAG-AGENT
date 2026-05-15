@@ -292,6 +292,14 @@ class ChineseChunker:
     @staticmethod
     def _add_overlap(chunks: List[Chunk], overlap: int, metadata: Dict[str, Any]) -> List[Chunk]:
         """为相邻块添加重叠内容。"""
+        if overlap > 0 and chunks and chunks[0].char_count > 0:
+            chunk_size = chunks[0].char_count
+            if overlap >= chunk_size // 2:
+                raise ValueError(
+                    f"overlap ({overlap}) must be less than half of chunk_size ({chunk_size}), "
+                    f"got overlap={overlap} >= chunk_size/2={chunk_size // 2}"
+                )
+
         result: List[Chunk] = []
         for i, chunk in enumerate(chunks):
             content = chunk.content
@@ -308,34 +316,23 @@ class ChineseChunker:
 
     @staticmethod
     def _fix_word_boundary(text: str) -> str:
-        """使用 jieba 检查并修复词语边界截断。"""
-        try:
-            import jieba
-
-            if not text:
-                return text
-
-            # 检查末尾是否为半个词语
-            words = list(jieba.cut(text))
-            if len(words) < 2:
-                return text
-
-            # 获取最后一个完整词语
-            last_word = words[-1].strip()
-            if last_word and len(last_word) > 1:
-                # 如果最后一个词被截断，移除不完整部分
-                tail = text[-len(last_word):]
-                if tail != last_word:
-                    # 可能被截断了，回退到上一个分隔符位置
-                    for sep in SEPARATORS:
-                        pos = text[:-1].rfind(sep)
-                        if pos > len(text) // 2:
-                            return text[: pos + len(sep)]
-
+        """在截断点向前搜索最近的句子分隔符，修复词语边界。"""
+        if not text:
             return text
-        except ImportError:
-            # jieba 未安装，不做边界修复
-            return text
+
+        # 中文句子分隔符，按优先级搜索
+        sentence_seps = "。！？；\n"
+        last_sep_pos = -1
+        for ch in reversed(text):
+            pos = text.rfind(ch)
+            if pos > last_sep_pos:
+                last_sep_pos = pos
+
+        # 如果找到分隔符且在文本后半段，截断到该位置
+        if last_sep_pos > len(text) // 2:
+            return text[: last_sep_pos + 1]
+
+        return text
 
     @staticmethod
     def detect_document_type(sections: List[DocumentSection]) -> DocumentType:

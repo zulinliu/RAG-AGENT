@@ -35,38 +35,21 @@ class FeedbackRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AskResponse(BaseModel):
-    """Response body for a Q&A answer."""
+    """Response body for a Q&A answer.
 
-    id: uuid.UUID
-    conversation_id: uuid.UUID
-    question: str
+    Aligned with the dataclass in app.services.qa_service.AskResponse.
+    """
+
+    conversation_id: str
+    message_id: str
+    query: str
     answer: str
-    citations: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[int] = Field(default_factory=list)
     confidence: float = 0.0
-    model_name: str = ""
-    created_at: datetime
+    sources_used: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"from_attributes": True}
-
-
-class StreamChunk(BaseModel):
-    """A single chunk in an SSE stream."""
-
-    type: str  # "token", "citation", "done", "error"
-    content: str | None = None
-    data: dict[str, Any] | None = None
-
-
-class CitationDetail(BaseModel):
-    """Detailed citation information."""
-
-    index: int
-    document_id: uuid.UUID
-    document_title: str
-    chunk_id: uuid.UUID
-    content: str
-    score: float = 0.0
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MessageResponse(BaseModel):

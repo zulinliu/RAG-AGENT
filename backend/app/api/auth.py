@@ -1,13 +1,13 @@
 """Authentication API routes.
 
-Provides login, register, user profile, and password change endpoints.
+Provides login, register, user profile, logout, and password change endpoints.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -19,7 +19,7 @@ from app.schemas.user import (
     UserResponse,
 )
 from app.services.user_service import UserService
-from app.utils.auth import PermissionChecker, get_current_user
+from app.utils.auth import PermissionChecker, get_current_user, revoke_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -138,12 +138,31 @@ async def get_me(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/v1/auth/logout
+# ---------------------------------------------------------------------------
+
+
+@router.post("/logout")
+async def logout(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, str]:
+    """Revoke the current JWT token (logout)."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        await revoke_token(token, request)
+    return {"detail": "Logged out successfully"}
+
+
+# ---------------------------------------------------------------------------
 # PUT /api/v1/auth/password
 # ---------------------------------------------------------------------------
 
 
 @router.put("/password")
 async def change_password(
+    request: Request,
     body: PasswordChange,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -163,4 +182,11 @@ async def change_password(
         )
 
     await svc.update_user(user.id, password=body.new_password)
+
+    # Revoke the current token so the user must re-authenticate
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        await revoke_token(token, request)
+
     return {"detail": "Password changed successfully"}

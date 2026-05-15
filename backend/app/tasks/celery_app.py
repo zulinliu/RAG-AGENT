@@ -56,9 +56,9 @@ celery_app.conf.update(
 
     # 任务路由
     task_routes={
-        "backend.app.tasks.sync_tasks.sync_document_task": {"queue": "sync_queue"},
-        "backend.app.tasks.sync_tasks.batch_sync_task": {"queue": "sync_queue"},
-        "backend.app.tasks.sync_tasks.scheduled_sync_task": {"queue": "sync_queue"},
+        "app.tasks.sync_tasks.sync_document_task": {"queue": "sync_queue"},
+        "app.tasks.sync_tasks.batch_sync_task": {"queue": "sync_queue"},
+        "app.tasks.sync_tasks.scheduled_sync_task": {"queue": "sync_queue"},
     },
 
     # 重试策略
@@ -72,7 +72,7 @@ celery_app.conf.update(
     # Beat 定时任务
     beat_schedule={
         "scheduled-sync": {
-            "task": "backend.app.tasks.sync_tasks.scheduled_sync_task",
+            "task": "app.tasks.sync_tasks.scheduled_sync_task",
             "schedule": int(os.getenv("SYNC_INTERVAL_SECONDS", "3600")),  # 默认每小时
             "args": (),
         },
@@ -80,6 +80,6 @@ celery_app.conf.update(
 )
 
 # 自动发现任务模块
-celery_app.autodiscover_tasks(["backend.app.tasks"])
+celery_app.autodiscover_tasks(["app.tasks"])
 
 logger.info("Celery 应用已配置: broker=%s", CELERY_BROKER_URL)

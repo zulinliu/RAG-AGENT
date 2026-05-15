@@ -28,9 +28,14 @@ def _sha256(text: str) -> str:
 class QueryCache:
     """基于 Redis 的查询缓存，Redis 不可用时优雅降级为空操作。"""
 
-    def __init__(self, redis_url: str = "redis://localhost:6379/0") -> None:
+    def __init__(
+        self,
+        redis_url: str = "redis://localhost:6379/0",
+        embedding_model_name: str = "",
+    ) -> None:
         self._url = redis_url
         self._redis: aioredis.Redis | None = None
+        self._embedding_model_name = embedding_model_name
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -73,11 +78,13 @@ class QueryCache:
         if redis is None:
             return None
 
-        key = f"{_EMB_PREFIX}:{_sha256(query + project_id)}"
+        key = f"{_EMB_PREFIX}:{self._embedding_model_name}:{_sha256(query + project_id)}"
         try:
             raw: str | None = await redis.get(key)
             if raw is None:
+                self._record_miss()
                 return None
+            self._record_hit()
             return json.loads(raw)
         except Exception:
             logger.debug("QueryCache.get_embedding failed", exc_info=True)
@@ -91,7 +98,7 @@ class QueryCache:
         if redis is None:
             return
 
-        key = f"{_EMB_PREFIX}:{_sha256(query + project_id)}"
+        key = f"{_EMB_PREFIX}:{self._embedding_model_name}:{_sha256(query + project_id)}"
         try:
             await redis.set(key, json.dumps(embedding), ex=_EMBEDDING_TTL)
         except Exception:
@@ -113,7 +120,9 @@ class QueryCache:
         try:
             raw: str | None = await redis.get(key)
             if raw is None:
+                self._record_miss()
                 return None
+            self._record_hit()
             return json.loads(raw)
         except Exception:
             logger.debug("QueryCache.get_result failed", exc_info=True)
@@ -132,3 +141,25 @@ class QueryCache:
             await redis.set(key, json.dumps(result, ensure_ascii=False), ex=_RESULT_TTL)
         except Exception:
             logger.debug("QueryCache.set_result failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Metrics helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _record_hit() -> None:
+        """Increment the cache hit counter."""
+        try:
+            from app.middleware.metrics import RAG_CACHE_HITS_TOTAL
+            RAG_CACHE_HITS_TOTAL.inc()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _record_miss() -> None:
+        """Increment the cache miss counter."""
+        try:
+            from app.middleware.metrics import RAG_CACHE_MISSES_TOTAL
+            RAG_CACHE_MISSES_TOTAL.inc()
+        except Exception:
+            pass

@@ -2,11 +2,35 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
+
+
+def _validate_password_complexity(v: str) -> str:
+    """Ensure password meets complexity requirements.
+
+    - At least 8 characters
+    - Contains at least 2 of: uppercase, lowercase, digit
+    """
+    if len(v) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    categories = 0
+    if re.search(r'[A-Z]', v):
+        categories += 1
+    if re.search(r'[a-z]', v):
+        categories += 1
+    if re.search(r'\d', v):
+        categories += 1
+    if categories < 2:
+        raise ValueError(
+            "Password must contain at least 2 of: uppercase letters, "
+            "lowercase letters, digits"
+        )
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -17,7 +41,7 @@ class LoginRequest(BaseModel):
     """Request body for ``POST /api/v1/auth/login``."""
 
     username: str = Field(..., min_length=2, max_length=64)
-    password: str = Field(..., min_length=6, max_length=128)
+    password: str = Field(..., min_length=8, max_length=128)
 
 
 class UserCreate(BaseModel):
@@ -25,8 +49,13 @@ class UserCreate(BaseModel):
 
     username: str = Field(..., min_length=2, max_length=64)
     email: EmailStr
-    password: str = Field(..., min_length=6, max_length=128)
+    password: str = Field(..., min_length=8, max_length=128)
     role: str = Field(default="user")
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        return _validate_password_complexity(v)
 
     @field_validator("role")
     @classmethod
@@ -41,9 +70,16 @@ class UserUpdate(BaseModel):
     """Request body for updating an existing user."""
 
     email: EmailStr | None = None
-    password: str | None = Field(default=None, min_length=6, max_length=128)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
     role: str | None = None
     is_active: bool | None = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return _validate_password_complexity(v)
 
     @field_validator("role")
     @classmethod
@@ -59,8 +95,13 @@ class UserUpdate(BaseModel):
 class PasswordChange(BaseModel):
     """Request body for changing the current user's password."""
 
-    old_password: str = Field(..., min_length=6, max_length=128)
-    new_password: str = Field(..., min_length=6, max_length=128)
+    old_password: str = Field(..., min_length=8, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        return _validate_password_complexity(v)
 
 
 class UserRoleUpdate(BaseModel):

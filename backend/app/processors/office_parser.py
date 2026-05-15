@@ -108,11 +108,38 @@ class WordParser(BaseParser):
 
     @staticmethod
     def _table_to_markdown(table: Any) -> str:
-        """将 Word 表格转为 Markdown。"""
+        """将 Word 表格转为 Markdown，处理合并单元格。"""
         rows: List[List[str]] = []
-        for row in table.rows:
-            cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+        prev_cells: List[str] = []
+
+        for row_idx, row in enumerate(table.rows):
+            cells: List[str] = []
+            for cell in row.cells:
+                text = cell.text.strip().replace("\n", " ")
+                # 检测合并单元格：通过 gridSpan XML 属性判断
+                tc = cell._tc  # type: ignore[attr-defined]
+                grid_span_elem = tc.find(
+                    ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}gridSpan"
+                )
+                if grid_span_elem is not None:
+                    span_val = grid_span_elem.get(
+                        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val",
+                        "1",
+                    )
+                    span_count = int(span_val)
+                    # 对合并的额外列用 [merged] 标记
+                    cells.append(text)
+                    for _ in range(span_count - 1):
+                        cells.append("[merged]")
+                else:
+                    cells.append(text)
+
+            # 对纵向合并：检查相邻行单元格文本是否完全相同
+            if row_idx > 0 and cells and cells == prev_cells:
+                cells = [c if c == "[merged]" else "[merged]" for c in cells]
+
             rows.append(cells)
+            prev_cells = list(cells)
 
         if not rows:
             return ""
@@ -137,6 +164,9 @@ class ExcelParser(BaseParser):
 
     使用 openpyxl/pandas 将每个 sheet 转为 Markdown 表格。
     """
+
+    # 大表格按此行数切分
+    CHUNK_ROW_LIMIT = 100
 
     def parse(self, file_path: str, mime_type: str) -> List[DocumentSection]:
         """解析 Excel 文档。"""
@@ -166,14 +196,33 @@ class ExcelParser(BaseParser):
                     rows.append(cells)
 
             if rows:
-                md = self._rows_to_markdown(rows)
-                sections.append(DocumentSection(
-                    title="",
-                    content=md,
-                    section_type=SectionType.TABLE,
-                    level=0,
-                    metadata={"sheet_name": sheet_name, "row_count": len(rows)},
-                ))
+                # 大表格按行数切分，保留表头
+                if len(rows) > self.CHUNK_ROW_LIMIT:
+                    header = rows[0]
+                    for chunk_start in range(1, len(rows), self.CHUNK_ROW_LIMIT):
+                        chunk_rows = [header] + rows[chunk_start:chunk_start + self.CHUNK_ROW_LIMIT]
+                        md = self._rows_to_markdown(chunk_rows)
+                        chunk_index = (chunk_start - 1) // self.CHUNK_ROW_LIMIT
+                        sections.append(DocumentSection(
+                            title="",
+                            content=md,
+                            section_type=SectionType.TABLE,
+                            level=0,
+                            metadata={
+                                "sheet_name": sheet_name,
+                                "row_count": len(chunk_rows) - 1,
+                                "chunk_index": chunk_index,
+                            },
+                        ))
+                else:
+                    md = self._rows_to_markdown(rows)
+                    sections.append(DocumentSection(
+                        title="",
+                        content=md,
+                        section_type=SectionType.TABLE,
+                        level=0,
+                        metadata={"sheet_name": sheet_name, "row_count": len(rows)},
+                    ))
 
         wb.close()
         return sections

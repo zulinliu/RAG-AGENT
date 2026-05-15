@@ -5,12 +5,15 @@ Provides CRUD, connection testing, and sync management for data sources.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.schemas import DetailResponse
 from app.schemas.datasource import (
     ConnectionTestResult,
     DataSourceCreate,
@@ -26,6 +29,41 @@ from app.utils.auth import (
 )
 
 router = APIRouter(tags=["Data Sources"])
+
+
+# ---------------------------------------------------------------------------
+# Request schema for connection test with raw config
+# ---------------------------------------------------------------------------
+
+
+class ConnectionTestRequest(BaseModel):
+    """Request body for testing a connection with raw config (no persisted datasource)."""
+
+    source_type: str = Field(..., description="One of: local, seafile, nas, dingtalk")
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/datasources/test-connection
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/datasources/test-connection",
+    response_model=ConnectionTestResult,
+    dependencies=[
+        Depends(PermissionChecker(roles={"system_admin", "project_admin", "knowledge_admin"})),
+    ],
+)
+async def test_connection_with_config(
+    body: ConnectionTestRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> ConnectionTestResult:
+    """Test connectivity using provided config without persisting a data source."""
+    return await DataSourceService.test_connection_with_config(
+        source_type=body.source_type,
+        config=body.config,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -48,8 +86,6 @@ async def create_data_source(
 ) -> DataSourceResponse:
     """Create a new data source within a project."""
     check_project_permission(current_user, project_id)
-
-    import uuid
 
     svc = DataSourceService(db)
     try:
@@ -85,8 +121,6 @@ async def list_data_sources(
     """List all data sources for a project."""
     check_project_permission(current_user, project_id)
 
-    import uuid
-
     svc = DataSourceService(db)
     sources = await svc.list_data_sources(uuid.UUID(project_id))
     return [_datasource_to_response(ds) for ds in sources]
@@ -111,8 +145,6 @@ async def update_data_source(
     db: AsyncSession = Depends(get_db),
 ) -> DataSourceResponse:
     """Update a data source."""
-    import uuid
-
     svc = DataSourceService(db)
     try:
         ds = await svc.update_data_source(
@@ -144,10 +176,8 @@ async def delete_data_source(
     data_source_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> DetailResponse:
     """Soft-delete a data source."""
-    import uuid
-
     svc = DataSourceService(db)
     try:
         ds = await svc.get_data_source(uuid.UUID(data_source_id))
@@ -159,7 +189,7 @@ async def delete_data_source(
 
     check_project_permission(current_user, str(ds.project_id))
     await svc.delete_data_source(ds.id)
-    return {"detail": "Data source deleted"}
+    return DetailResponse(detail="Data source deleted")
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +210,6 @@ async def test_connection(
     db: AsyncSession = Depends(get_db),
 ) -> ConnectionTestResult:
     """Test connectivity to a data source."""
-    import uuid
-
     svc = DataSourceService(db)
     try:
         ds = await svc.get_data_source(uuid.UUID(data_source_id))
@@ -210,10 +238,8 @@ async def trigger_sync(
     data_source_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> DetailResponse:
     """Trigger a manual sync for a data source."""
-    import uuid
-
     svc = DataSourceService(db)
     try:
         ds = await svc.get_data_source(uuid.UUID(data_source_id))
@@ -225,7 +251,7 @@ async def trigger_sync(
 
     check_project_permission(current_user, str(ds.project_id))
     await svc.trigger_sync(ds.id)
-    return {"detail": "Sync triggered"}
+    return DetailResponse(detail="Sync triggered")
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +269,6 @@ async def get_sync_status(
     db: AsyncSession = Depends(get_db),
 ) -> SyncStatus:
     """Get the current sync status of a data source."""
-    import uuid
-
     svc = DataSourceService(db)
     try:
         ds = await svc.get_data_source(uuid.UUID(data_source_id))
@@ -262,18 +286,21 @@ async def get_sync_status(
 # Helpers
 # ---------------------------------------------------------------------------
 
-SENSITIVE_CONFIG_KEYS = {"password", "secret", "token", "api_key", "app_secret", "access_key", "secret_key"}
+SENSITIVE_SUBSTRINGS = ("password", "secret", "token", "key")
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """Check if a config key looks sensitive."""
+    lower = key.lower()
+    return any(s in lower for s in SENSITIVE_SUBSTRINGS)
 
 
 def _sanitize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Mask sensitive fields in data source config."""
-    sanitized = {}
-    for key, value in config.items():
-        if key.lower() in SENSITIVE_CONFIG_KEYS or any(s in key.lower() for s in ("password", "secret", "token", "key")):
-            sanitized[key] = "********" if value else value
-        else:
-            sanitized[key] = value
-    return sanitized
+    return {
+        key: ("********" if value and _is_sensitive_key(key) else value)
+        for key, value in config.items()
+    }
 
 
 def _datasource_to_response(ds: Any) -> DataSourceResponse:

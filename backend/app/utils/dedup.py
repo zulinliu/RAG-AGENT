@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import uuid as _uuid
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_uuid(value: str) -> str:
+    """Validate that a value is a properly formatted UUID to prevent filter injection."""
+    return str(_uuid.UUID(value))
 
 
 def compute_file_hash(file_path: str) -> str:
@@ -65,11 +71,20 @@ def fuzzy_dedup(
     if not content or len(content.strip()) < 10:
         return False
 
+    # Validate project_id to prevent Milvus filter expression injection
     try:
+        safe_project_id = _validate_uuid(project_id)
+    except ValueError:
+        logger.warning("Invalid project_id passed to fuzzy_dedup: %s", project_id)
+        return False
+
+    try:
+        import asyncio
+
         from app.processors.embedding import EmbeddingService
 
         embedding_service = EmbeddingService()
-        vector = embedding_service.encode_single(content)
+        vector = asyncio.run(embedding_service.encode_single(content))
 
         if not vector:
             logger.warning("Vectorization failed, skipping fuzzy dedup")
@@ -86,7 +101,7 @@ def fuzzy_dedup(
             anns_field="vector",
             param=search_params,
             limit=5,
-            expr=f'project_id == "{project_id}"',
+            expr=f'project_id == "{safe_project_id}"',
             output_fields=["content", "document_id"],
         )
 

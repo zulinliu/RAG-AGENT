@@ -152,8 +152,8 @@ class CRAGPipeline:
             f"查询: {state.query}"
         )
         try:
-            result = await self._llm_client.generate(prompt, temperature=0.0, max_tokens=8)
-            needed = "YES" in result.upper()
+            result = await self._llm_client.generate(prompt, temperature=0.0, max_tokens=16)
+            needed = result.strip().upper().startswith("YES")
             logger.info("route_query: '%s' -> retrieval_needed=%s", state.query, needed)
             return {"retrieval_needed": needed}
         except Exception:
@@ -225,10 +225,10 @@ class CRAGPipeline:
         semaphore = asyncio.Semaphore(5)
 
         async def _grade_single(doc: SearchResult) -> SearchResult | None:
-            # 首尾各取 250 字符，避免关键信息在后半段被截断
+            # 取前 800 字符（覆盖引言和结论），避免截断关键信息
             content = doc.content
-            if len(content) > 500:
-                content = content[:250] + "\n...\n" + content[-250:]
+            if len(content) > 800:
+                content = content[:800]
             prompt = (
                 "判断以下文档片段是否与用户查询相关。\n"
                 "只输出 RELEVANT 或 IRRELEVANT。\n\n"

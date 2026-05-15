@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import secrets as _secrets
 from functools import cached_property
 from typing import Literal
 
@@ -221,7 +223,7 @@ class AuthConfig(BaseSettings):
 
     secret_key: str = ""
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 1440
+    access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
 
 
@@ -279,6 +281,26 @@ class Settings(BaseSettings):
                 raise ValueError("ES_PASSWORD must not use default 'changeme' in production")
             if self.minio.secret_key == "minioadmin":
                 raise ValueError("MINIO_SECRET_KEY must not use default 'minioadmin' in production")
+            if self.redis.password in ("", "ragagent123"):
+                raise ValueError(
+                    "REDIS_PASSWORD must be set to a strong value in production"
+                )
+        else:
+            # Non-production: auto-generate secret key if empty
+            if not self.auth.secret_key:
+                self.auth.secret_key = _secrets.token_urlsafe(32)
+                logging.getLogger(__name__).warning(
+                    "AUTH_SECRET_KEY is empty — a temporary key has been auto-generated. "
+                    "Set AUTH_SECRET_KEY in your environment for stable sessions."
+                )
+        # Warn about wildcard CORS with credentials (in any environment)
+        cors_origins_list = [o.strip() for o in self.cors.origins.split(",") if o.strip()]
+        if "*" in cors_origins_list:
+            logging.getLogger(__name__).warning(
+                "CORS_ORIGINS contains '*' — this allows any origin. "
+                "When used with allow_credentials=True, browsers will reject "
+                "the combination. Use explicit origins in production."
+            )
         return self
 
     @cached_property

@@ -4,30 +4,51 @@ from __future__ import annotations
 
 import logging
 import sys
-import uuid
 from typing import Any
 
 import structlog
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+
+
+def _add_correlation_id(
+    logger: Any, method_name: str, event_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """Inject correlation_id from a context variable into every log entry."""
+    try:
+        correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
+        if correlation_id is not None:
+            event_dict["correlation_id"] = correlation_id
+    except Exception:
+        pass
+    return event_dict
 
 
 def configure_logging(environment: str = "dev") -> None:
-    """Set up structlog processors for JSON (production) or console (dev) output."""
+    """Set up structlog processors for JSON (production) or console (dev) output.
+
+    * **dev** — coloured, human-readable console output.
+    * **prod** (or ``production``) — compact JSON, one object per line.
+
+    A ``correlation_id`` propagated through ``structlog.contextvars`` is
+    automatically attached to every log line.
+    """
     shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
+        _add_correlation_id,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.UnicodeDecoder(),
+        structlog.processors.format_exc_info,
     ]
 
-    if environment == "prod":
+    is_production = environment in ("prod", "production")
+
+    if is_production:
         renderer = structlog.processors.JSONRenderer()
     else:
-        renderer = structlog.dev.ConsoleRenderer()
+        renderer = structlog.dev.ConsoleRenderer(colors=True)
 
     structlog.configure(
         processors=[
@@ -53,28 +74,14 @@ def configure_logging(environment: str = "dev") -> None:
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
-    root_logger.setLevel(logging.INFO if environment == "prod" else logging.DEBUG)
+    root_logger.setLevel(logging.INFO if is_production else logging.DEBUG)
 
     # Quiet down noisy libraries
     for name in ("uvicorn.access", "httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-class CorrelationIdMiddleware(BaseHTTPMiddleware):
-    """Inject a correlation ID into every request and attach it to log output."""
-
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: RequestResponseEndpoint,
-    ) -> Response:
-        correlation_id = request.headers.get(
-            "X-Correlation-ID",
-            str(uuid.uuid4()),
-        )
-        structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
-
-        response = await call_next(request)
-        response.headers["X-Correlation-ID"] = correlation_id
-        return response
+def set_correlation_id(correlation_id: str) -> None:
+    """Bind a correlation ID to the current async context for log tracing."""
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(correlation_id=correlation_id)

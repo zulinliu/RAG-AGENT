@@ -5,12 +5,14 @@ Provides CRUD operations for projects and project-member management.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.schemas import DetailResponse
 from app.schemas.project import (
     ProjectCreate,
     ProjectMemberCreate,
@@ -73,8 +75,6 @@ async def list_projects(
 
     System admins see all active projects.
     """
-    import uuid
-
     svc = ProjectService(db)
     user_id = None if current_user.get("role") == "system_admin" else uuid.UUID(
         current_user["user_id"],
@@ -180,7 +180,7 @@ async def update_project(
 async def delete_project(
     project_id: str,
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> DetailResponse:
     """Soft-delete a project (system admin only)."""
     svc = ProjectService(db)
     try:
@@ -191,7 +191,7 @@ async def delete_project(
             detail=str(exc),
         ) from exc
 
-    return {"detail": "Project deleted"}
+    return DetailResponse(detail="Project deleted")
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ async def add_project_member(
     try:
         assoc = await svc.assign_project_role(
             user_id=body.user_id,
-            project_id=body.user_id.__class__(project_id),
+            project_id=uuid.UUID(project_id),
             role=body.role,
         )
     except ValueError as exc:
@@ -248,8 +248,6 @@ async def list_project_members(
 ) -> list[ProjectMemberResponse]:
     """List all members of a project."""
     check_project_permission(current_user, project_id)
-
-    import uuid
 
     svc = UserService(db)
     members = await svc.get_project_members(uuid.UUID(project_id))
@@ -284,11 +282,9 @@ async def remove_project_member(
     user_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> DetailResponse:
     """Remove a user from a project."""
     check_project_permission(current_user, project_id)
-
-    import uuid
 
     svc = UserService(db)
     try:
@@ -302,4 +298,4 @@ async def remove_project_member(
             detail=str(exc),
         ) from exc
 
-    return {"detail": "Member removed"}
+    return DetailResponse(detail="Member removed")

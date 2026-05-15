@@ -169,7 +169,7 @@ class SessionManager:
         """当对话历史过长时，压缩早期对话为摘要。"""
         messages = await self.get_history(conversation_id)
         total_chars = sum(len(m["content"]) for m in messages)
-        estimated_tokens = int(total_chars / 0.7)  # 中文约 0.7 字符/token
+        estimated_tokens = int(total_chars / 1.5)  # 中文约 1.5 字符/token（与 context_builder 一致）
 
         if estimated_tokens <= self._max_context_tokens:
             return

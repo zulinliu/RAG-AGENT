@@ -198,8 +198,8 @@ class PlainTextParser(BaseParser):
     @staticmethod
     def _read_with_detection(file_path: str) -> Optional[str]:
         """自动检测编码并读取文件。"""
-        # 先尝试常见编码
-        for encoding in ("utf-8", "utf-8-sig", "gbk", "gb2312", "gb18030", "big5"):
+        # 先尝试常见编码（gb18030 覆盖 gbk 和 gb2312，无需重复）
+        for encoding in ("utf-8", "utf-8-sig", "gb18030", "big5"):
             try:
                 with open(file_path, "r", encoding=encoding) as f:
                     return f.read()

@@ -29,7 +29,7 @@ class ConfidenceScorer:
         Args:
             retrieval_scores: 检索文档的相关性分数列表。
             citation_coverage: 引用覆盖率 (0-1)。
-            answer_length: 答案文本长度（字符数）。
+            answer_length: 答案文本长度（字符数），保留参数以兼容调用方，不再参与评分。
 
         Returns:
             置信度分数 (0-1)。
@@ -44,17 +44,15 @@ class ConfidenceScorer:
         # 2. 引用覆盖: 直接使用
         citation_score = min(citation_coverage, 1.0)
 
-        # 3. 答案合理性: 基于长度启发式
-        #    太短(< 30 字)或太长(> 3000 字)都降低分数
-        if answer_length < 10:
-            answer_reasonableness = 0.1
-        elif answer_length < 30:
-            answer_reasonableness = 0.4
-        elif answer_length <= 3000:
-            answer_reasonableness = min(answer_length / 500.0, 1.0)
-            answer_reasonableness = max(answer_reasonableness, 0.5)
+        # 3. 答案合理性: 基于引用覆盖率而非答案长度
+        #    有引用且覆盖率 > 0.5 -> 高分；无引用 -> 降分
+        if citation_coverage > 0.5:
+            answer_reasonableness = 0.7 + 0.3 * citation_coverage  # 0.85 ~ 1.0
+        elif citation_coverage > 0:
+            answer_reasonableness = 0.4 + 0.6 * citation_coverage  # 0.4 ~ 0.7
         else:
-            answer_reasonableness = max(1.0 - (answer_length - 3000) / 5000.0, 0.3)
+            # 无引用的答案，降低评分
+            answer_reasonableness = 0.2
 
         # 加权综合
         confidence = (

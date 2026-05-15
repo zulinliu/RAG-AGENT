@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -101,6 +102,7 @@ class LLMClient:
                 raise ValueError("prompt and messages cannot both be None")
             messages = [{"role": "user", "content": prompt}]
 
+        start_time = time.monotonic()
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
@@ -118,6 +120,19 @@ class LLMClient:
             usage.get("prompt_tokens"),
             usage.get("completion_tokens"),
         )
+
+        # Record Prometheus metrics
+        try:
+            from app.middleware.metrics import RAG_LLM_CALL_DURATION, RAG_LLM_TOKENS_TOTAL
+
+            RAG_LLM_CALL_DURATION.labels(model=self._model).observe(time.monotonic() - start_time)
+            if usage.get("prompt_tokens"):
+                RAG_LLM_TOKENS_TOTAL.labels(model=self._model, direction="prompt").inc(usage["prompt_tokens"])
+            if usage.get("completion_tokens"):
+                RAG_LLM_TOKENS_TOTAL.labels(model=self._model, direction="completion").inc(usage["completion_tokens"])
+        except Exception:
+            logger.debug("Failed to record LLM metrics", exc_info=True)
+
         return content
 
     # ------------------------------------------------------------------
@@ -153,30 +168,41 @@ class LLMClient:
                 buffer = ""
                 async for chunk in response.aiter_text():
                     buffer += chunk
-                    # Process complete lines from the buffer
+                    # Process complete lines from the buffer (handle both \n and \r\n)
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
+                        line = line.rstrip("\r")
                         line = line.strip()
                         if not line:
                             continue
-                        # Handle lines that may or may not have the "data: " prefix
+
+                        # Extract data payload from SSE format
                         if line.startswith("data: "):
                             data_str = line[6:]
                         elif line.startswith("data:"):
                             data_str = line[5:]
                         else:
-                            data_str = line
+                            # Skip non-data SSE lines (event:, id:, etc.)
+                            continue
 
                         data_str = data_str.strip()
                         if data_str == "[DONE]":
                             return
+
+                        # Parse JSON with tolerance for incomplete payloads
                         try:
                             data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            # Incomplete JSON — skip and let next chunk complete it
+                            logger.debug("SSE incomplete JSON, skipping: %s", data_str[:80])
+                            continue
+
+                        try:
                             delta = data["choices"][0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
                                 yield content
-                        except (json.JSONDecodeError, KeyError, IndexError):
+                        except (KeyError, IndexError):
                             continue
         except Exception:
             logger.exception("stream_generate failed")

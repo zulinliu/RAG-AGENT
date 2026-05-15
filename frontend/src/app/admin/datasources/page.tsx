@@ -14,22 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Loading, EmptyState } from "@/components/ui/loading";
 import { useToast } from "@/components/ui/toast";
 import { DataSourceForm } from "@/components/admin/data-source-form";
-
-interface DataSource {
-  id: string;
-  name: string;
-  type: string;
-  project_id: string;
-  config: Record<string, string>;
-  status: string;
-  last_synced_at?: string;
-  created_at: string;
-}
-
-interface Project {
-  id: string;
-  name: string;
-}
+import type { Project, DataSource } from "@/lib/types";
 
 interface SyncStatus {
   status: string;
@@ -88,15 +73,16 @@ export default function DataSourcesPage() {
       setProjects(projectsData);
 
       if (selectedProjectId === "all") {
+        // TODO: 后端应提供 GET /api/v1/datasources 端点返回所有数据源，避免 N+1 查询
+        const dsResults = await Promise.allSettled(
+          projectsData.map((p) =>
+            api.get<DataSource[]>(`/projects/${p.id}/datasources`)
+          )
+        );
         const allDs: DataSource[] = [];
-        for (const p of projectsData) {
-          try {
-            const ds = await api.get<DataSource[]>(
-              `/projects/${p.id}/datasources`
-            );
-            allDs.push(...ds);
-          } catch {
-            // skip failed project data sources
+        for (const result of dsResults) {
+          if (result.status === "fulfilled") {
+            allDs.push(...result.value);
           }
         }
         setDataSources(allDs);

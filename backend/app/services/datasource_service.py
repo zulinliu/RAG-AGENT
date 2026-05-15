@@ -135,26 +135,24 @@ class DataSourceService:
     # Connection test
     # ------------------------------------------------------------------
 
-    async def test_connection(
-        self,
-        data_source_id: uuid.UUID,
+    @staticmethod
+    async def test_connection_with_config(
+        source_type: str,
+        config: dict[str, Any],
     ) -> ConnectionTestResult:
-        """Test connectivity to the external data source.
+        """Test connectivity using raw config (no DB session needed).
 
-        This is a placeholder that performs basic validation. Real
-        connector-specific logic will be added when connectors are
-        implemented in Phase 3.
+        Validates the config for the given source_type without requiring
+        a persisted data source record.
+
+        Args:
+            source_type: One of local, seafile, nas, dingtalk.
+            config: Connector-specific configuration dict.
 
         Returns:
-            ``ConnectionTestResult`` with success status.
+            ConnectionTestResult with success status.
         """
-        ds = await self.get_data_source(data_source_id)
-
         try:
-            source_type = ds.source_type
-            config = ds.config or {}
-
-            # Basic validation per source type
             if source_type == "local":
                 path = config.get("path", "")
                 if not path:
@@ -174,7 +172,6 @@ class DataSourceService:
 
             elif source_type == "nas":
                 host = config.get("host", "")
-                protocol = config.get("protocol", "")
                 if not host:
                     return ConnectionTestResult(
                         success=False,
@@ -199,6 +196,95 @@ class DataSourceService:
             return ConnectionTestResult(
                 success=True,
                 message=f"Connection to {source_type} data source validated",
+            )
+
+        except Exception as exc:
+            return ConnectionTestResult(
+                success=False,
+                message=f"Connection test failed: {exc}",
+            )
+
+    async def test_connection(
+        self,
+        data_source_id: uuid.UUID,
+    ) -> ConnectionTestResult:
+        """Test connectivity to the external data source.
+
+        Instantiates the corresponding connector and attempts to connect.
+        Returns success/failure with an error message.
+
+        Returns:
+            ``ConnectionTestResult`` with success status.
+        """
+        ds = await self.get_data_source(data_source_id)
+
+        try:
+            source_type = ds.source_type
+            config = ds.config or {}
+
+            # Basic config validation before attempting real connection
+            if source_type == "local":
+                path = config.get("path", "")
+                if not path:
+                    return ConnectionTestResult(
+                        success=False,
+                        message="Local path not configured",
+                    )
+
+            elif source_type == "seafile":
+                url = config.get("server_url", "")
+                token = config.get("access_token", "")
+                if not url or not token:
+                    return ConnectionTestResult(
+                        success=False,
+                        message="Seafile server URL or access token not configured",
+                    )
+
+            elif source_type == "nas":
+                host = config.get("host", "")
+                if not host:
+                    return ConnectionTestResult(
+                        success=False,
+                        message="NAS host not configured",
+                    )
+
+            elif source_type == "dingtalk":
+                app_key = config.get("app_key", "")
+                app_secret = config.get("app_secret", "")
+                if not app_key or not app_secret:
+                    return ConnectionTestResult(
+                        success=False,
+                        message="DingTalk app_key or app_secret not configured",
+                    )
+
+            else:
+                return ConnectionTestResult(
+                    success=False,
+                    message=f"Unknown source type: {source_type}",
+                )
+
+            # --- Real connection test via connector ---
+            import asyncio
+
+            connector = _instantiate_connector(source_type, config)
+
+            try:
+                # connect() is synchronous — run in thread to avoid blocking the event loop
+                await asyncio.to_thread(connector.connect)
+            except Exception as conn_exc:
+                return ConnectionTestResult(
+                    success=False,
+                    message=f"Connection failed: {conn_exc}",
+                )
+            finally:
+                try:
+                    connector.disconnect()
+                except Exception:
+                    pass
+
+            return ConnectionTestResult(
+                success=True,
+                message=f"Successfully connected to {source_type} data source",
             )
 
         except Exception as exc:
@@ -264,3 +350,43 @@ class DataSourceService:
             pending_documents=status_counts.get("pending", 0),
             failed_documents=status_counts.get("failed", 0),
         )
+
+
+def _instantiate_connector(source_type: str, config: dict[str, Any]) -> Any:
+    """Create a connector instance from source type and config dict."""
+    from app.connectors.local import LocalConnector
+    from app.connectors.seafile import SeafileConnector
+    from app.connectors.nas import NASConnector
+    from app.connectors.dingtalk import DingTalkConnector
+
+    if source_type == "local":
+        return LocalConnector(watch_dir=config["path"])
+
+    elif source_type == "seafile":
+        return SeafileConnector(
+            server_url=config["server_url"],
+            token=config.get("access_token", ""),
+            repo_id=config.get("repo_id", ""),
+        )
+
+    elif source_type == "nas":
+        return NASConnector(
+            protocol=config.get("protocol", "nfs"),
+            host=config.get("host"),
+            share_name=config.get("share_name"),
+            username=config.get("username"),
+            password=config.get("password"),
+            mount_point=config.get("mount_point"),
+            remote_path=config.get("remote_path", "/"),
+        )
+
+    elif source_type == "dingtalk":
+        return DingTalkConnector(
+            mode=config.get("mode", "api"),
+            app_key=config.get("app_key"),
+            app_secret=config.get("app_secret"),
+            cli_path=config.get("cli_path"),
+        )
+
+    else:
+        raise ValueError(f"Unknown source type: {source_type}")

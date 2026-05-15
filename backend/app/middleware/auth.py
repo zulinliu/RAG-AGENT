@@ -33,7 +33,6 @@ PUBLIC_PATHS: frozenset[str] = frozenset({
 # Path prefixes that bypass authentication
 PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/v1/auth/login",
-    "/api/v1/auth/register",
 )
 
 

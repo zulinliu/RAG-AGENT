@@ -198,6 +198,7 @@ export function ChatSidebar({
                 <button
                   key={conv.id}
                   onClick={() => onSelectConversation(conv.id)}
+                  aria-label={`打开对话 ${conv.title}`}
                   className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                     selectedConversationId === conv.id
                       ? "bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)]"

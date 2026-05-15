@@ -88,6 +88,9 @@ export default function DocumentsPage() {
   const [selectedDocName, setSelectedDocName] = useState("");
   const [chunksLoading, setChunksLoading] = useState(false);
 
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Document | null>(null);
+
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -168,14 +171,22 @@ export default function DocumentsPage() {
     }
   };
 
-  const handleDelete = async (doc: Document) => {
-    if (!confirm(`确定要删除文档"${doc.filename}"吗？`)) return;
+  const handleDelete = (doc: Document) => {
+    setDeleteTarget(doc);
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await api.delete(`/documents/${doc.id}`);
+      await api.delete(`/documents/${deleteTarget.id}`);
       addToast("success", "文档已删除");
       loadDocuments();
     } catch {
       addToast("error", "删除失败");
+    } finally {
+      setShowDeleteConfirm(false);
+      setDeleteTarget(null);
     }
   };
 
@@ -406,6 +417,36 @@ export default function DocumentsPage() {
             ))}
           </div>
         )}
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        open={showDeleteConfirm}
+        onClose={() => {
+          setShowDeleteConfirm(false);
+          setDeleteTarget(null);
+        }}
+        title="确认删除"
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowDeleteConfirm(false);
+                setDeleteTarget(null);
+              }}
+            >
+              取消
+            </Button>
+            <Button onClick={confirmDelete}>
+              确认删除
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          确定要删除文档「{deleteTarget?.filename}」吗？此操作不可撤销。
+        </p>
       </Modal>
     </div>
   );

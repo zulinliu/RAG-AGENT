@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useAppStore, type Project } from "@/lib/store";
 import { api } from "@/lib/api";
 import type { CitationData } from "@/components/chat/citation";
+import { useToast } from "@/components/ui/toast";
 
 interface ConversationMessage {
   id: string;
@@ -27,28 +28,41 @@ export default function ConversationPage() {
   const router = useRouter();
   const conversationId = params.id as string;
   const { currentProject, setCurrentProject, setUser, user } = useAppStore();
+  const { addToast } = useToast();
 
   const [conversation, setConversation] =
     React.useState<ConversationDetail | null>(null);
   const [loading, setLoading] = React.useState(true);
 
   useEffect(() => {
+    const controller = new AbortController();
     api
       .get<ConversationDetail>(`/qa/conversations/${conversationId}`)
       .then((data) => {
-        setConversation(data);
-        if (!currentProject || currentProject.id !== data.project_id) {
-          api
-            .get<Project>(`/projects/${data.project_id}`)
-            .then(setCurrentProject)
-            .catch((err) => { console.error("Request failed:", err) });
+        if (!controller.signal.aborted) {
+          setConversation(data);
+          if (!currentProject || currentProject.id !== data.project_id) {
+            api
+              .get<Project>(`/projects/${data.project_id}`)
+              .then(setCurrentProject)
+              .catch(() => {
+                addToast("error", "加载项目信息失败");
+              });
+          }
         }
       })
       .catch(() => {
-        router.replace("/chat");
+        if (!controller.signal.aborted) {
+          router.replace("/chat");
+        }
       })
-      .finally(() => setLoading(false));
-  }, [conversationId, currentProject, setCurrentProject, router]);
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, [conversationId, currentProject, setCurrentProject, router, addToast]);
 
   useEffect(() => {
     if (!user) {
@@ -64,7 +78,9 @@ export default function ConversationPage() {
             role: u.role,
           })
         )
-        .catch((err) => { console.error("Request failed:", err) });
+        .catch(() => {
+          // User info load failure is non-critical
+        });
     }
   }, [user, setUser]);
 

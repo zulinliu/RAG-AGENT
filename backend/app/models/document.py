@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 from typing import Any
@@ -10,6 +11,24 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.base import BaseMixin
+
+
+class SyncStatusEnum(str, enum.Enum):
+    """Data source sync status."""
+
+    idle = "idle"
+    syncing = "syncing"
+    completed = "completed"
+    failed = "failed"
+
+
+class ProcessingStatusEnum(str, enum.Enum):
+    """Document processing status."""
+
+    pending = "pending"
+    processing = "processing"
+    indexed = "indexed"
+    failed = "failed"
 
 
 class Document(Base, BaseMixin):

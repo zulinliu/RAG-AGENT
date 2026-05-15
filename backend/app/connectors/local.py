@@ -36,10 +36,15 @@ class LocalConnector(BaseConnector):
         watch_dir: str,
         allowed_extensions: Optional[Set[str]] = None,
         excluded_dirs: Optional[Set[str]] = None,
+        project_id: str = "",
+        datasource_id: str = "",
     ) -> None:
         self.watch_dir = Path(watch_dir).resolve()
         self.allowed_extensions = allowed_extensions or DEFAULT_ALLOWED_EXTENSIONS
         self.excluded_dirs = excluded_dirs or DEFAULT_EXCLUDED_DIRS
+        self._project_id = project_id
+        self._datasource_id = datasource_id
+        self._on_event_callback: Optional[Any] = None
         self._observer: Optional[Any] = None
         self._watching = False
         self._watch_thread: Optional[threading.Thread] = None
@@ -89,8 +94,27 @@ class LocalConnector(BaseConnector):
             checksum=None,
         )
 
-    def start_watching(self) -> None:
-        """启动后台监控线程。"""
+    def start_watching(
+        self,
+        on_event_callback: Any = None,
+        project_id: str = "",
+        datasource_id: str = "",
+    ) -> None:
+        """启动后台监控线程。
+
+        Args:
+            on_event_callback: 文件事件回调函数，签名为
+                ``callback(file_path: str, project_id: str, datasource_id: str)``。
+                如果为 None，则默认触发 Celery sync_document_task。
+            project_id: 项目 ID，传递给回调或 Celery 任务。
+            datasource_id: 数据源 ID，传递给回调或 Celery 任务。
+        """
+        if on_event_callback is not None:
+            self._on_event_callback = on_event_callback
+        if project_id:
+            self._project_id = project_id
+        if datasource_id:
+            self._datasource_id = datasource_id
         if self._watching:
             return
         try:
@@ -98,23 +122,60 @@ class LocalConnector(BaseConnector):
             from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent, FileDeletedEvent
 
             class Handler(FileSystemEventHandler):
-                def __init__(self, connector: "LocalConnector") -> None:
+                def __init__(
+                    self,
+                    connector: "LocalConnector",
+                    on_event_callback: Any = None,
+                    project_id: str = "",
+                    datasource_id: str = "",
+                ) -> None:
                     self.connector = connector
+                    self._on_event_callback = on_event_callback
+                    self._project_id = project_id
+                    self._datasource_id = datasource_id
 
                 def on_created(self, event: Any) -> None:
                     if not event.is_directory:
                         logger.info("文件创建: %s", event.src_path)
+                        self._trigger_sync(event.src_path)
 
                 def on_modified(self, event: Any) -> None:
                     if not event.is_directory:
                         logger.info("文件修改: %s", event.src_path)
+                        self._trigger_sync(event.src_path)
 
                 def on_deleted(self, event: Any) -> None:
                     if not event.is_directory:
                         logger.info("文件删除: %s", event.src_path)
 
+                def _trigger_sync(self, file_path: str) -> None:
+                    """触发文件同步回调。"""
+                    if self._on_event_callback is not None:
+                        try:
+                            self._on_event_callback(
+                                file_path,
+                                self._project_id,
+                                self._datasource_id,
+                            )
+                        except Exception as exc:
+                            logger.error("回调执行失败: %s", exc)
+                    else:
+                        # 默认行为：延迟导入 Celery 任务直接触发同步
+                        try:
+                            from app.tasks.sync_tasks import sync_document_task
+
+                            sync_document_task.delay(file_path, self._project_id, self._datasource_id)
+                        except Exception as exc:
+                            logger.error("触发同步任务失败: %s", exc)
+
+            handler = Handler(
+                self,
+                on_event_callback=self._on_event_callback,
+                project_id=self._project_id,
+                datasource_id=self._datasource_id,
+            )
             self._observer = Observer()
-            self._observer.schedule(Handler(self), str(self.watch_dir), recursive=True)
+            self._observer.schedule(handler, str(self.watch_dir), recursive=True)
             self._observer.daemon = True
             self._observer.start()
             self._watching = True

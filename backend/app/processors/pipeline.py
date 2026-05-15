@@ -1,5 +1,6 @@
 """文档处理管道，编排完整的处理流程。"""
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -27,7 +28,7 @@ class PipelineResult:
     chunk_count: int = 0
     error_message: Optional[str] = None
     duration_ms: float = 0.0
-    metadata: Dict[str, Any] = None
+    metadata: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.metadata is None:
@@ -141,7 +142,7 @@ class DocumentPipeline:
 
             # 步骤 5: 向量化
             texts = [chunk.content for chunk in chunks]
-            vectors = self.embedding_service.encode(texts)
+            vectors = asyncio.run(self.embedding_service.encode(texts))
             logger.info("向量化完成: %d 个向量", len(vectors))
 
             # 步骤 6: 双索引写入
@@ -210,28 +211,8 @@ class DocumentPipeline:
         return sha256.hexdigest()
 
     def _is_processed(self, checksum: str, project_id: str) -> bool:
-        """检查文档是否已经处理过（基于 checksum）。
-
-        查询 PostgreSQL documents 表中是否有相同 checksum 且状态为
-        'indexed' 的记录。
-        """
-        if self.indexer._pg_pool is None:
-            return False
-        try:
-            with self.indexer._pg_pool.connection() as conn:
-                result = conn.execute(
-                    """
-                    SELECT 1 FROM documents
-                    WHERE project_id = %s AND checksum = %s AND status = 'indexed'
-                    LIMIT 1
-                    """,
-                    (project_id, checksum),
-                )
-                row = result.fetchone()
-                return row is not None
-        except Exception as e:
-            logger.warning("checksum lookup failed: %s", e)
-            return False
+        """检查文档是否已经处理过（基于 checksum）。"""
+        return self.indexer.check_document_processed(checksum, project_id)
 
     @staticmethod
     def _clean_sections(sections: List[DocumentSection]) -> List[DocumentSection]:

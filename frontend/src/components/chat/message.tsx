@@ -3,11 +3,54 @@
 import React, { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import dynamic from "next/dynamic";
 import { ThumbsUp, ThumbsDown, AlertTriangle, Copy, Check } from "lucide-react";
 import { Citation, type CitationData } from "./citation";
 import { api } from "@/lib/api";
+
+const SyntaxHighlighter = dynamic(
+  () => import("react-syntax-highlighter").then((mod) => mod.Prism),
+  {
+    ssr: false,
+    loading: () => <code className="block rounded-lg bg-[var(--color-bg-tertiary)] p-4 text-sm">...</code>,
+  }
+);
+
+let oneDark: Record<string, React.CSSProperties> | null = null;
+function loadOneDark(): Promise<Record<string, React.CSSProperties>> {
+  if (oneDark) return Promise.resolve(oneDark);
+  return import("react-syntax-highlighter/dist/esm/styles/prism").then((mod) => {
+    oneDark = mod.oneDark;
+    return oneDark;
+  });
+}
+
+function CodeBlock({ language, children }: { language: string; children: string }) {
+  const [style, setStyle] = useState<Record<string, React.CSSProperties> | null>(null);
+
+  React.useEffect(() => {
+    loadOneDark().then(setStyle);
+  }, []);
+
+  if (!style) {
+    return <code className="block rounded-lg bg-[var(--color-bg-tertiary)] p-4 text-sm">{children}</code>;
+  }
+
+  return (
+    <SyntaxHighlighter
+      style={style}
+      language={language}
+      PreTag="div"
+      customStyle={{
+        margin: 0,
+        borderRadius: "0.5rem",
+        fontSize: "0.8125rem",
+      }}
+    >
+      {children}
+    </SyntaxHighlighter>
+  );
+}
 
 interface MessageProps {
   role: "user" | "assistant";
@@ -119,18 +162,9 @@ export function ChatMessage({
                       <div className="absolute right-2 top-2 rounded bg-[var(--color-bg-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-muted)]">
                         {match[1]}
                       </div>
-                      <SyntaxHighlighter
-                        style={oneDark}
-                        language={match[1]}
-                        PreTag="div"
-                        customStyle={{
-                          margin: 0,
-                          borderRadius: "0.5rem",
-                          fontSize: "0.8125rem",
-                        }}
-                      >
+                      <CodeBlock language={match[1]}>
                         {String(children).replace(/\n$/, "")}
-                      </SyntaxHighlighter>
+                      </CodeBlock>
                     </div>
                   );
                 },

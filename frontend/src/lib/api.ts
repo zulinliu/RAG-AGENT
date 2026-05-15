@@ -101,38 +101,41 @@ export const api = {
     return request<T>(path, { method: "DELETE" });
   },
 
-  upload<T>(path: string, formData: FormData): Promise<T> {
+  async upload<T>(path: string, formData: FormData): Promise<T> {
     const token = getToken();
     const headers: Record<string, string> = {};
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    return fetch(buildUrl(path), {
+    const response = await fetch(buildUrl(path), {
       method: "POST",
       headers,
       body: formData,
-    }).then(async (response) => {
-      if (response.status === 401) {
-        removeToken();
-        window.location.href = "/login";
-        throw new ApiError(401, "登录已过期，请重新登录");
-      }
-      if (!response.ok) {
-        let detail = `上传失败 (${response.status})`;
-        try {
-          const body = await response.json();
-          detail = body.detail || detail;
-        } catch {
-          // use default detail
-        }
-        throw new ApiError(response.status, detail);
-      }
-      if (response.status === 204) {
-        return undefined as T;
-      }
-      return response.json() as T;
     });
+
+    if (response.status === 401) {
+      removeToken();
+      window.location.href = "/login";
+      throw new ApiError(401, "登录已过期，请重新登录");
+    }
+
+    if (!response.ok) {
+      let detail = `上传失败 (${response.status})`;
+      try {
+        const body = await response.json();
+        detail = body.detail || body.message || detail;
+      } catch {
+        // use default detail
+      }
+      throw new ApiError(response.status, detail);
+    }
+
+    if (response.status === 204) {
+      return undefined as T;
+    }
+
+    return response.json() as T;
   },
 };
 

@@ -15,13 +15,14 @@ from __future__ import annotations
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 SECURITY_HEADERS: dict[bytes, bytes] = {
-    b"strict-transport-security": b"max-age=31536000; includeSubDomains",
     b"content-security-policy": b"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'",
     b"x-content-type-options": b"nosniff",
     b"x-frame-options": b"DENY",
     b"referrer-policy": b"strict-origin-when-cross-origin",
     b"permissions-policy": b"camera=(), microphone=(), geolocation=()",
 }
+
+HSTS_HEADER = (b"strict-transport-security", b"max-age=31536000; includeSubDomains")
 
 
 class SecurityHeadersMiddleware:
@@ -42,6 +43,18 @@ class SecurityHeadersMiddleware:
                 for name, value in SECURITY_HEADERS.items():
                     if name not in existing:
                         headers.append((name, value))
+                # Add HSTS only for HTTPS requests (check scheme or x-forwarded-proto)
+                scheme = scope.get("scheme", "http")
+                if scheme == "https":
+                    if HSTS_HEADER[0] not in existing:
+                        headers.append(HSTS_HEADER)
+                else:
+                    # Also check x-forwarded-proto for reverse-proxy setups
+                    for name, value in headers:
+                        if name == b"x-forwarded-proto" and value == b"https":
+                            if HSTS_HEADER[0] not in existing:
+                                headers.append(HSTS_HEADER)
+                            break
                 message = {
                     "type": message["type"],
                     "status": message.get("status", 200),

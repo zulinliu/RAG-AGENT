@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # ─── PostgreSQL 17 ────────────────────────────────────────────────────
   postgres:
@@ -127,7 +125,9 @@ services:
       - "6379:6379"
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD:-ragagent123}
-    command: redis-server /usr/local/etc/redis/redis.conf
+    command: >
+      redis-server /usr/local/etc/redis/redis.conf
+      --requirepass ${REDIS_PASSWORD:-ragagent123}
     volumes:
       - ./config/redis/redis.conf:/usr/local/etc/redis/redis.conf
       - redis_data:/data
@@ -263,6 +263,12 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-dev}
     volumes:
       - ./backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -337,7 +343,22 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=4", "--max-tasks-per-child=100", "--task-time-limit=600"]
+    networks:
+      - rag-network
+
+  # ─── Celery Beat ─────────────────────────────────────────────────────
+  celery-beat:
+    build: ./backend
+    container_name: rag-celery-beat
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: ["celery", "-A", "app.tasks.celery_app", "beat", "--loglevel=info"]
     networks:
       - rag-network
 

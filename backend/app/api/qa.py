@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user
-from app.schemas.qa import AskRequest, FeedbackRequest
+from app.schemas import DetailResponse
+from app.schemas.qa import AskRequest, AskResponse as AskResponseSchema, FeedbackRequest
 from app.services.qa_service import QAService, AskResponse
 from app.utils.auth import check_project_permission
 
@@ -37,12 +38,12 @@ def _get_qa_service(request: Request) -> QAService:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/ask")
+@router.post("/ask", response_model=AskResponseSchema)
 async def ask(
     req: AskRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
     qa_service: QAService = Depends(_get_qa_service),
-) -> AskResponse:
+) -> AskResponseSchema:
     """同步问答接口。"""
     check_project_permission(current_user, str(req.project_id))
     user_id = current_user["user_id"]
@@ -54,7 +55,7 @@ async def ask(
             query=req.question,
             conversation_id=str(req.conversation_id) if req.conversation_id else None,
         )
-        return result
+        return AskResponseSchema.model_validate(result.to_dict())
     except Exception:
         logger.exception("ask endpoint failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -124,6 +125,7 @@ async def list_conversations(
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
+    limit: int = 100,
     current_user: dict[str, Any] = Depends(get_current_user),
     qa_service: QAService = Depends(_get_qa_service),
 ) -> dict[str, Any]:
@@ -134,7 +136,7 @@ async def get_conversation(
             raise HTTPException(status_code=404, detail="Conversation not found")
         if conversation["user_id"] != current_user["user_id"]:
             raise HTTPException(status_code=403, detail="Access denied")
-        messages = await qa_service.get_conversation_history(conversation_id)
+        messages = await qa_service.get_conversation_history(conversation_id, limit=min(limit, 500))
         return {
             "conversation_id": conversation_id,
             "messages": messages,
@@ -151,7 +153,7 @@ async def submit_feedback(
     req: FeedbackRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
     qa_service: QAService = Depends(_get_qa_service),
-) -> dict[str, str]:
+) -> DetailResponse:
     """提交用户反馈。"""
     try:
         owner_id = await qa_service.get_message_owner(str(req.message_id))
@@ -160,7 +162,7 @@ async def submit_feedback(
         if owner_id != current_user["user_id"]:
             raise HTTPException(status_code=403, detail="Access denied")
         await qa_service.submit_feedback(str(req.message_id), req.feedback)
-        return {"status": "ok"}
+        return DetailResponse(detail="ok")
     except HTTPException:
         raise
     except ValueError as e:

@@ -95,12 +95,14 @@ class DualIndexer:
 
         milvus_ids: List[str] = []
         es_count = 0
+        milvus_error: Optional[str] = None
 
         try:
             # 写入 Milvus
             milvus_ids = self._write_milvus(chunks, vectors, project_id, document_id)
             logger.info("Milvus 写入完成: %d 条", len(milvus_ids))
         except Exception as e:
+            milvus_error = str(e)
             logger.error("Milvus 写入失败: %s", e)
 
         try:
@@ -111,23 +113,23 @@ class DualIndexer:
             logger.error("Elasticsearch 写入失败: %s", e)
             # Milvus 成功但 ES 失败，清理 Milvus
             if milvus_ids:
-                logger.warning("ES 写入失败，回滚 Milvus 写入")
-                try:
-                    self._delete_from_milvus(document_id)
-                except Exception as rollback_err:
-                    logger.error("Milvus 回滚失败: %s", rollback_err)
+                logger.warning("ES 写入失败，回滚 Milvus 写入 (document_id=%s)", document_id)
+                self._cleanup_milvus_chunks(milvus_ids, document_id)
             self._set_document_status(document_id, project_id, data_source_id, "error", str(e))
             return 0
 
-        if not milvus_ids:
+        if milvus_error or not milvus_ids:
             # ES 成功但 Milvus 失败，清理 ES
             if es_count > 0:
-                logger.warning("Milvus 写入失败，回滚 ES 写入")
+                logger.warning("Milvus 写入失败，回滚 ES 写入 (document_id=%s)", document_id)
                 try:
                     self._delete_from_es(document_id)
                 except Exception as rollback_err:
                     logger.error("ES 回滚失败: %s", rollback_err)
-            self._set_document_status(document_id, project_id, data_source_id, "error", "Milvus write failed")
+            self._set_document_status(
+                document_id, project_id, data_source_id, "error",
+                milvus_error or "Milvus write failed",
+            )
             return 0
 
         # 两个索引都成功，更新 PostgreSQL 元数据
@@ -168,6 +170,37 @@ class DualIndexer:
                 conn.commit()
         except Exception as e:
             logger.error("Failed to set document status: %s", e)
+
+    def check_document_processed(self, checksum: str, project_id: str) -> bool:
+        """检查文档是否已经处理过（基于 checksum）。
+
+        查询 PostgreSQL documents 表中是否有相同 checksum 且状态为
+        'indexed' 的记录。
+
+        Args:
+            checksum: 文件 SHA-256 校验和
+            project_id: 项目 ID
+
+        Returns:
+            True 如果文档已经处理过
+        """
+        if self._pg_pool is None:
+            return False
+        try:
+            with self._pg_pool.connection() as conn:
+                result = conn.execute(
+                    """
+                    SELECT 1 FROM documents
+                    WHERE project_id = %s AND checksum = %s AND status = 'indexed'
+                    LIMIT 1
+                    """,
+                    (project_id, checksum),
+                )
+                row = result.fetchone()
+                return row is not None
+        except Exception as e:
+            logger.warning("checksum lookup failed: %s", e)
+            return False
 
     def delete_document(self, document_id: str) -> bool:
         """从所有索引中删除文档。"""
@@ -232,27 +265,95 @@ class DualIndexer:
             return
 
         fields = [
-            FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=64, is_primary=True),
-            FieldSchema(name="project_id", dtype=DataType.VARCHAR, max_length=64, is_partition_key=True),
-            FieldSchema(name="document_id", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=8192),
-            FieldSchema(name="chunk_type", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="parent_title", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(name="hierarchy", dtype=DataType.JSON),
-            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self.vector_dim),
+            FieldSchema(
+                name="id",
+                dtype=DataType.VARCHAR,
+                max_length=64,
+                is_primary=True,
+                description="Unique chunk identifier",
+            ),
+            FieldSchema(
+                name="project_id",
+                dtype=DataType.VARCHAR,
+                max_length=64,
+                is_partition_key=True,
+                description="Project identifier for partition pruning",
+            ),
+            FieldSchema(
+                name="document_id",
+                dtype=DataType.VARCHAR,
+                max_length=64,
+                description="Source document identifier",
+            ),
+            FieldSchema(
+                name="chunk_id",
+                dtype=DataType.VARCHAR,
+                max_length=64,
+                description="Chunk identifier within document",
+            ),
+            FieldSchema(
+                name="content",
+                dtype=DataType.VARCHAR,
+                max_length=4096,
+                enable_analyzer=True,
+                description="Chunk text content (analyzer-enabled for full-text search)",
+            ),
+            FieldSchema(
+                name="vector",
+                dtype=DataType.FLOAT_VECTOR,
+                dim=self.vector_dim,
+                description="Dense embedding vector",
+            ),
+            FieldSchema(
+                name="chunk_type",
+                dtype=DataType.VARCHAR,
+                max_length=32,
+                description="Chunk type (e.g. text, table, code)",
+            ),
+            FieldSchema(
+                name="title",
+                dtype=DataType.VARCHAR,
+                max_length=512,
+                description="Chunk title",
+            ),
+            FieldSchema(
+                name="author",
+                dtype=DataType.VARCHAR,
+                max_length=128,
+                description="Document author",
+            ),
+            FieldSchema(
+                name="source_type",
+                dtype=DataType.VARCHAR,
+                max_length=32,
+                description="Source type (e.g. git, confluence, local_file)",
+            ),
+            FieldSchema(
+                name="hierarchy",
+                dtype=DataType.JSON,
+                description="Hierarchical path within the document",
+            ),
+            FieldSchema(
+                name="created_at",
+                dtype=DataType.INT64,
+                description="Creation timestamp (epoch seconds)",
+            ),
         ]
-        schema = CollectionSchema(fields=fields, description="RAG chunks")
+        schema = CollectionSchema(
+            fields=fields,
+            description="RAG chunk storage with dense vectors",
+        )
         collection = Collection(name=self.milvus_collection, schema=schema)
 
         # 创建 HNSW 索引（与 config/milvus/collection.py 一致）
         index_params = {
             "metric_type": "COSINE",
             "index_type": "HNSW",
-            "params": {"M": 16, "efConstruction": 128},
+            "params": {"M": 16, "efConstruction": 256},
         }
         collection.create_index(field_name="vector", index_params=index_params)
         collection.load()
-        logger.info("Milvus 集合已创建 (HNSW): %s", self.milvus_collection)
+        logger.info("Milvus 集合已创建 (HNSW, efConstruction=256): %s", self.milvus_collection)
 
     def _write_milvus(
         self,
@@ -262,28 +363,41 @@ class DualIndexer:
         document_id: str,
     ) -> List[str]:
         """写入 Milvus。"""
+        import time as _time
+
         if self._milvus is None:
             return []
 
         ids = []
         doc_ids = []
         project_ids = []
+        chunk_ids = []
         contents = []
         chunk_types = []
-        parent_titles = []
+        titles = []
+        authors = []
+        source_types = []
         hierarchies = []
+        created_ats = []
 
         for i, (chunk, _vec) in enumerate(zip(chunks, vectors)):
-            chunk_id = str(uuid.uuid4())
-            ids.append(chunk_id)
+            chunk_uuid = str(uuid.uuid4())
+            ids.append(chunk_uuid)
             doc_ids.append(document_id)
             project_ids.append(project_id)
-            contents.append(chunk.get("content", "")[:8192])
+            chunk_ids.append(chunk_uuid)
+            contents.append(chunk.get("content", "")[:4096])
             chunk_types.append(chunk.get("metadata", {}).get("chunk_type", "paragraph"))
-            parent_titles.append(chunk.get("metadata", {}).get("parent_title", "")[:512])
+            titles.append(chunk.get("metadata", {}).get("parent_title", "")[:512])
+            authors.append(chunk.get("metadata", {}).get("author", "")[:128])
+            source_types.append(chunk.get("metadata", {}).get("source_type", "")[:32])
             hierarchies.append(chunk.get("metadata", {}).get("hierarchy", []))
+            created_ats.append(int(_time.time()))
 
-        entities = [ids, project_ids, doc_ids, contents, chunk_types, parent_titles, hierarchies, vectors]
+        entities = [
+            ids, project_ids, doc_ids, chunk_ids, contents, vectors,
+            chunk_types, titles, authors, source_types, hierarchies, created_ats,
+        ]
         self._milvus.insert(entities)
         self._milvus.flush()
         return ids
@@ -297,6 +411,27 @@ class DualIndexer:
         expr = f'document_id == "{validated_id}"'
         self._milvus.delete(expr)
         self._milvus.flush()
+
+    def _cleanup_milvus_chunks(self, chunk_ids: List[str], document_id: str) -> None:
+        """清理已写入 Milvus 的分块（用于回滚）。
+
+        先尝试按 chunk IDs 精确删除；如果失败则回退到按 document_id 删除。
+        """
+        if self._milvus is None or not chunk_ids:
+            return
+        try:
+            # 精确按 ID 删除
+            quoted_ids = ", ".join(f'"{cid}"' for cid in chunk_ids)
+            expr = f"id in [{quoted_ids}]"
+            self._milvus.delete(expr)
+            self._milvus.flush()
+            logger.info("Milvus 回滚: 已删除 %d 条分块 (document_id=%s)", len(chunk_ids), document_id)
+        except Exception as e:
+            logger.warning("按 ID 删除 Milvus 分块失败，回退到按 document_id 删除: %s", e)
+            try:
+                self._delete_from_milvus(document_id)
+            except Exception as rollback_err:
+                logger.error("Milvus 回滚彻底失败 (document_id=%s): %s", document_id, rollback_err)
 
     # ------------------------------------------------------------------
     # Elasticsearch 操作

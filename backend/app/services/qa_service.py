@@ -265,9 +265,10 @@ class QAService:
     async def get_conversation_history(
         self,
         conversation_id: str,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """获取对话详情。"""
-        return await self._session.get_history(conversation_id)
+        return await self._session.get_history(conversation_id, limit=limit)
 
     async def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         """获取对话基本信息（含 user_id）。"""

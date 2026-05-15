@@ -87,9 +87,21 @@ export function DataSourceForm({
   const handleTest = async () => {
     setTesting(true);
     try {
-      // First create the data source to test
+      // TODO: 后端需提供 POST /api/v1/datasources/test-connection 端点
+      // 该端点应接收 { type, config } 参数并返回 { success: boolean, message?: string }
       addToast("info", "连接测试中...");
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Validate required fields before testing
+      const requiredFields = fields.filter((f) => f.required);
+      for (const field of requiredFields) {
+        if (!formData.config[field.key]?.trim()) {
+          addToast("warning", `请先填写${field.label}再测试连接`);
+          return;
+        }
+      }
+      await api.post("/datasources/test-connection", {
+        type: formData.type,
+        config: formData.config,
+      });
       addToast("success", "连接测试成功");
     } catch (err) {
       addToast(
