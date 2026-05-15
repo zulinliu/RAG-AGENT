@@ -2,10 +2,27 @@
 
 import logging
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _optional_uuid(value: str | None) -> str | None:
+    """Return a normalized UUID string or None for blank optional IDs."""
+    if not value:
+        return None
+    return str(uuid.UUID(str(value)))
+
+
+def _normalize_json_value(value: Any) -> Any:
+    """Normalize metadata values for JSONB columns."""
+    if value in ("", None):
+        return []
+    if isinstance(value, (dict, list)):
+        return value
+    return {"path": str(value)}
 
 
 class DualIndexer:
@@ -24,6 +41,7 @@ class DualIndexer:
         # Elasticsearch 配置
         es_hosts: Optional[List[str]] = None,
         es_index_prefix: str = "rag",
+        es_index: str | None = None,
         # PostgreSQL 配置
         pg_dsn: Optional[str] = None,
         # 向量维度
@@ -34,6 +52,7 @@ class DualIndexer:
         self.milvus_collection = milvus_collection
         self.es_hosts = es_hosts or ["http://localhost:9200"]
         self.es_index_prefix = es_index_prefix
+        self.es_index = es_index or f"{es_index_prefix}_chunks"
         self.pg_dsn = pg_dsn
         self.vector_dim = vector_dim
         self._milvus: Optional[Any] = None
@@ -68,11 +87,17 @@ class DualIndexer:
         document_id: str,
         data_source_id: str,
         checksum: str | None = None,
+        file_path: str = "",
+        title: str = "",
+        source_type: str = "unknown",
+        file_size: int | None = None,
+        mime_type: str | None = None,
+        file_type: str | None = None,
     ) -> int:
         """将分块和向量写入双索引（原子性保证）。
 
-        先将文档状态标记为 indexing，两个索引都成功后标记为 indexed，
-        任一失败时清理已成功的那个并标记为 error。
+        先将文档状态标记为 processing，两个索引都成功后标记为 indexed，
+        任一失败时清理已成功的那个并标记为 failed。
 
         Args:
             chunks: 分块列表，每个包含 content 和 metadata
@@ -90,8 +115,19 @@ class DualIndexer:
         if not chunks:
             return 0
 
-        # 标记文档状态为 indexing
-        self._set_document_status(document_id, project_id, data_source_id, "indexing")
+        # 标记文档状态为 processing
+        self._set_document_status(
+            document_id,
+            project_id,
+            data_source_id,
+            "processing",
+            file_path=file_path,
+            title=title,
+            source_type=source_type,
+            file_size=file_size,
+            mime_type=mime_type,
+            file_type=file_type,
+        )
 
         milvus_ids: List[str] = []
         es_count = 0
@@ -115,7 +151,19 @@ class DualIndexer:
             if milvus_ids:
                 logger.warning("ES 写入失败，回滚 Milvus 写入 (document_id=%s)", document_id)
                 self._cleanup_milvus_chunks(milvus_ids, document_id)
-            self._set_document_status(document_id, project_id, data_source_id, "error", str(e))
+            self._set_document_status(
+                document_id,
+                project_id,
+                data_source_id,
+                "failed",
+                str(e),
+                file_path=file_path,
+                title=title,
+                source_type=source_type,
+                file_size=file_size,
+                mime_type=mime_type,
+                file_type=file_type,
+            )
             return 0
 
         if milvus_error or not milvus_ids:
@@ -127,19 +175,49 @@ class DualIndexer:
                 except Exception as rollback_err:
                     logger.error("ES 回滚失败: %s", rollback_err)
             self._set_document_status(
-                document_id, project_id, data_source_id, "error",
+                document_id, project_id, data_source_id, "failed",
                 milvus_error or "Milvus write failed",
+                file_path=file_path,
+                title=title,
+                source_type=source_type,
+                file_size=file_size,
+                mime_type=mime_type,
+                file_type=file_type,
             )
             return 0
 
         # 两个索引都成功，更新 PostgreSQL 元数据
         try:
-            self._update_pg_metadata(chunks, project_id, document_id, data_source_id, checksum)
+            self._update_pg_metadata(
+                chunks,
+                project_id,
+                document_id,
+                data_source_id,
+                checksum,
+                file_path=file_path,
+                title=title,
+                source_type=source_type,
+                file_size=file_size,
+                mime_type=mime_type,
+                file_type=file_type,
+            )
             logger.info("PostgreSQL 元数据更新完成")
         except Exception as e:
             logger.error("PostgreSQL 更新失败: %s", e)
             # 索引已写入，不回滚，仅记录错误
-            self._set_document_status(document_id, project_id, data_source_id, "error", str(e))
+            self._set_document_status(
+                document_id,
+                project_id,
+                data_source_id,
+                "failed",
+                str(e),
+                file_path=file_path,
+                title=title,
+                source_type=source_type,
+                file_size=file_size,
+                mime_type=mime_type,
+                file_type=file_type,
+            )
 
         return len(milvus_ids)
 
@@ -150,32 +228,96 @@ class DualIndexer:
         data_source_id: str,
         status: str,
         error_message: Optional[str] = None,
+        file_path: str = "",
+        title: str = "",
+        source_type: str = "unknown",
+        file_size: int | None = None,
+        mime_type: str | None = None,
+        file_type: str | None = None,
     ) -> None:
         """更新 PostgreSQL 中的文档状态。"""
         if self._pg_pool is None:
             return
+        ds_id = _optional_uuid(data_source_id)
+        safe_file_path = file_path or ""
+        safe_title = title or Path(safe_file_path).name or str(document_id)
         try:
             with self._pg_pool.connection() as conn:
                 conn.execute(
                     """
-                    INSERT INTO documents (id, project_id, data_source_id, file_path, status, error_message, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    INSERT INTO documents (
+                        id, project_id, data_source_id, source_type, title,
+                        file_path, file_size, mime_type, file_type,
+                        status, error_message, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (id) DO UPDATE SET
                         status = EXCLUDED.status,
                         error_message = EXCLUDED.error_message,
+                        file_path = COALESCE(NULLIF(EXCLUDED.file_path, ''), documents.file_path),
+                        file_size = COALESCE(EXCLUDED.file_size, documents.file_size),
+                        mime_type = COALESCE(EXCLUDED.mime_type, documents.mime_type),
+                        file_type = COALESCE(EXCLUDED.file_type, documents.file_type),
                         updated_at = NOW()
                     """,
-                    (document_id, project_id, data_source_id, "", status, error_message),
+                    (
+                        document_id,
+                        project_id,
+                        ds_id,
+                        source_type or "unknown",
+                        safe_title,
+                        safe_file_path,
+                        file_size,
+                        mime_type,
+                        file_type,
+                        status,
+                        error_message,
+                    ),
                 )
                 conn.commit()
         except Exception as e:
             logger.error("Failed to set document status: %s", e)
 
-    def check_document_processed(self, checksum: str, project_id: str) -> bool:
+    def set_document_status(
+        self,
+        document_id: str,
+        project_id: str,
+        data_source_id: str,
+        status: str,
+        error_message: str | None = None,
+        *,
+        file_path: str = "",
+        title: str = "",
+        source_type: str = "unknown",
+        file_size: int | None = None,
+        mime_type: str | None = None,
+        file_type: str | None = None,
+    ) -> None:
+        """Public status update used by the pipeline before indexing starts."""
+        self._set_document_status(
+            document_id,
+            project_id,
+            data_source_id,
+            status,
+            error_message,
+            file_path=file_path,
+            title=title,
+            source_type=source_type,
+            file_size=file_size,
+            mime_type=mime_type,
+            file_type=file_type,
+        )
+
+    def check_document_processed(
+        self,
+        checksum: str,
+        project_id: str,
+        document_id: str | None = None,
+    ) -> bool:
         """检查文档是否已经处理过（基于 checksum）。
 
-        查询 PostgreSQL documents 表中是否有相同 checksum 且状态为
-        'indexed' 的记录。
+        优先按 document_id + checksum 判断同一文档是否已索引，避免不同
+        文件内容相同但路径不同的场景被错误跳过。
 
         Args:
             checksum: 文件 SHA-256 校验和
@@ -191,10 +333,13 @@ class DualIndexer:
                 result = conn.execute(
                     """
                     SELECT 1 FROM documents
-                    WHERE project_id = %s AND checksum = %s AND status = 'indexed'
+                    WHERE project_id = %s
+                      AND checksum = %s
+                      AND status = 'indexed'
+                      AND (%s IS NULL OR id = %s)
                     LIMIT 1
                     """,
-                    (project_id, checksum),
+                    (project_id, checksum, document_id, document_id),
                 )
                 row = result.fetchone()
                 return row is not None
@@ -477,7 +622,7 @@ class DualIndexer:
     def _ensure_es_index(self) -> None:
         """确保 ES 索引存在。"""
         assert self._es is not None
-        index_name = f"{self.es_index_prefix}_chunks"
+        index_name = self.es_index
 
         if self._es.indices.exists(index=index_name):
             return
@@ -512,7 +657,28 @@ class DualIndexer:
                 },
             },
         }
-        self._es.indices.create(index=index_name, body=mapping)
+        try:
+            self._es.indices.create(index=index_name, body=mapping)
+        except Exception as exc:
+            logger.warning("ES IK analyzer mapping failed, falling back to standard analyzer: %s", exc)
+            fallback_mapping = {
+                "settings": {"number_of_shards": 1, "number_of_replicas": 1},
+                "mappings": {
+                    "properties": {
+                        "document_id": {"type": "keyword"},
+                        "project_id": {"type": "keyword"},
+                        "data_source_id": {"type": "keyword"},
+                        "chunk_index": {"type": "integer"},
+                        "content": {"type": "text"},
+                        "chunk_type": {"type": "keyword"},
+                        "parent_title": {"type": "text"},
+                        "hierarchy": {"type": "flattened"},
+                        "char_count": {"type": "integer"},
+                        "created_at": {"type": "date"},
+                    },
+                },
+            }
+            self._es.indices.create(index=index_name, body=fallback_mapping)
         logger.info("ES 索引已创建: %s", index_name)
 
     def _write_es(
@@ -527,7 +693,7 @@ class DualIndexer:
 
         from elasticsearch.helpers import bulk
 
-        index_name = f"{self.es_index_prefix}_chunks"
+        index_name = self.es_index
 
         def _gen_actions() -> Any:
             for i, chunk in enumerate(chunks):
@@ -539,8 +705,12 @@ class DualIndexer:
                         "chunk_index": i,
                         "content": chunk.get("content", ""),
                         "chunk_type": chunk.get("metadata", {}).get("chunk_type", "paragraph"),
+                        "title": chunk.get("metadata", {}).get("title", ""),
                         "parent_title": chunk.get("metadata", {}).get("parent_title", ""),
                         "hierarchy": chunk.get("metadata", {}).get("hierarchy", ""),
+                        "source_type": chunk.get("metadata", {}).get("source_type", ""),
+                        "file_path": chunk.get("metadata", {}).get("file_path", ""),
+                        "mime_type": chunk.get("metadata", {}).get("mime_type", ""),
                         "char_count": len(chunk.get("content", "")),
                         "created_at": datetime.now(timezone.utc).isoformat(),
                     },
@@ -553,7 +723,7 @@ class DualIndexer:
         """从 ES 删除文档。"""
         if self._es is None:
             return
-        index_name = f"{self.es_index_prefix}_chunks"
+        index_name = self.es_index
         self._es.delete_by_query(
             index=index_name,
             body={"query": {"term": {"document_id": document_id}}},
@@ -592,23 +762,55 @@ class DualIndexer:
         document_id: str,
         data_source_id: str,
         checksum: str | None = None,
+        file_path: str = "",
+        title: str = "",
+        source_type: str = "unknown",
+        file_size: int | None = None,
+        mime_type: str | None = None,
+        file_type: str | None = None,
     ) -> None:
         """更新 PostgreSQL 中的文档元数据。"""
         if self._pg_pool is None:
             return
 
+        from psycopg.types.json import Jsonb
+
+        ds_id = _optional_uuid(data_source_id)
+        safe_file_path = file_path or ""
+        safe_title = title or Path(safe_file_path).name or str(document_id)
+
         with self._pg_pool.connection() as conn:
             # 更新文档状态（含 checksum）
             conn.execute(
                 """
-                INSERT INTO documents (id, project_id, data_source_id, file_path, status, checksum, updated_at)
-                VALUES (%s, %s, %s, %s, 'indexed', %s, NOW())
+                INSERT INTO documents (
+                    id, project_id, data_source_id, source_type, title,
+                    file_path, file_size, mime_type, file_type, status,
+                    checksum, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'indexed', %s, NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     status = 'indexed',
                     checksum = EXCLUDED.checksum,
+                    title = COALESCE(NULLIF(EXCLUDED.title, ''), documents.title),
+                    file_path = COALESCE(NULLIF(EXCLUDED.file_path, ''), documents.file_path),
+                    file_size = COALESCE(EXCLUDED.file_size, documents.file_size),
+                    mime_type = COALESCE(EXCLUDED.mime_type, documents.mime_type),
+                    file_type = COALESCE(EXCLUDED.file_type, documents.file_type),
                     updated_at = NOW()
                 """,
-                (document_id, project_id, data_source_id, "", checksum),
+                (
+                    document_id,
+                    project_id,
+                    ds_id,
+                    source_type or "unknown",
+                    safe_title,
+                    safe_file_path,
+                    file_size,
+                    mime_type,
+                    file_type,
+                    checksum,
+                ),
             )
 
             # 删除旧分块（支持重新索引）
@@ -617,10 +819,14 @@ class DualIndexer:
             # 写入分块信息
             for i, chunk in enumerate(chunks):
                 chunk_id = str(uuid.uuid4())
+                metadata = chunk.get("metadata", {})
                 conn.execute(
                     """
-                    INSERT INTO document_chunks (id, document_id, project_id, chunk_index, content, char_count, parent_title, hierarchy)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO document_chunks (
+                        id, document_id, project_id, chunk_index, content,
+                        chunk_type, char_count, metadata, parent_title, hierarchy
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO NOTHING
                     """,
                     (
@@ -629,9 +835,11 @@ class DualIndexer:
                         project_id,
                         i,
                         chunk.get("content", ""),
+                        metadata.get("chunk_type", "paragraph"),
                         len(chunk.get("content", "")),
-                        chunk.get("metadata", {}).get("parent_title", ""),
-                        chunk.get("metadata", {}).get("hierarchy", ""),
+                        Jsonb(metadata),
+                        metadata.get("parent_title", ""),
+                        Jsonb(_normalize_json_value(metadata.get("hierarchy", []))),
                     ),
                 )
 

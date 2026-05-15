@@ -53,7 +53,7 @@ def _init_es_client(settings: Any) -> AsyncElasticsearch | None:
     """Initialize async Elasticsearch client."""
     try:
         client = AsyncElasticsearch(
-            hosts=[settings.es.hosts],
+            hosts=settings.es.host_list,
             basic_auth=(settings.es.user, settings.es.password) if settings.es.user else None,
         )
         logger.info("Elasticsearch client connected: %s", settings.es.hosts)
@@ -66,8 +66,8 @@ def _init_es_client(settings: Any) -> AsyncElasticsearch | None:
 async def _build_qa_service(settings: Any, milvus_client: MilvusClient, es_client: AsyncElasticsearch) -> QAService | None:
     """Build QAService with all RAG dependencies wired up."""
     try:
-        collection_name = f"{settings.milvus.collection_prefix}_chunks"
-        es_index = f"{settings.es.index_prefix}_chunks"
+        collection_name = settings.milvus.collection_name
+        es_index = settings.es.index_name
 
         # Core RAG components
         retriever = HybridRetriever(
@@ -244,6 +244,7 @@ def create_app() -> FastAPI:
 
     # ---- routes ----
     application.include_router(health_router)
+    application.include_router(health_router, prefix=settings.api_prefix)
     application.include_router(api_router)
 
     # Prometheus metrics endpoint

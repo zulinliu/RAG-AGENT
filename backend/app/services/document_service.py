@@ -80,9 +80,26 @@ class DocumentService:
             base_query.order_by(Document.created_at.desc()).offset(offset).limit(size),
         )
         documents = result.scalars().all()
+        doc_ids = [doc.id for doc in documents]
+        chunk_counts: dict[uuid.UUID, int] = {}
+        if doc_ids:
+            chunk_count_result = await self._db.execute(
+                select(DocumentChunk.document_id, sa_func.count())
+                .where(DocumentChunk.document_id.in_(doc_ids))
+                .group_by(DocumentChunk.document_id),
+            )
+            chunk_counts = {row[0]: row[1] for row in chunk_count_result.all()}
+
+        items = []
+        for doc in documents:
+            item = doc.to_dict()
+            item["filename"] = doc.title
+            item["size"] = doc.file_size
+            item["chunk_count"] = chunk_counts.get(doc.id, 0)
+            items.append(item)
 
         return PaginatedResponse(
-            items=[doc.to_dict() for doc in documents],
+            items=items,
             total=total,
             page=page,
             size=size,

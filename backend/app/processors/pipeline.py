@@ -71,10 +71,10 @@ class DocumentPipeline:
             milvus_host=settings.milvus.host,
             milvus_port=settings.milvus.port,
             milvus_collection=settings.milvus.collection_name,
-            es_hosts=[f"http://{settings.elasticsearch.host}:{settings.elasticsearch.port}"],
-            es_index_prefix="rag",
+            es_hosts=settings.es.host_list,
+            es_index=settings.es.index_name,
             pg_dsn=settings.db.sync_url,
-            vector_dim=emb_cfg.vector_dim if hasattr(emb_cfg, "vector_dim") else 1024,
+            vector_dim=emb_cfg.dimension,
         )
         indexer.connect()
         return cls(indexer=indexer, embedding_service=embedding_svc)
@@ -87,6 +87,7 @@ class DocumentPipeline:
         mime_type: Optional[str] = None,
         document_id: Optional[str] = None,
         local_file_path: Optional[str] = None,
+        source_type: str = "unknown",
     ) -> PipelineResult:
         """处理单个文档，执行完整的管道流程。
 
@@ -102,15 +103,20 @@ class DocumentPipeline:
             PipelineResult 处理结果
         """
         start_time = datetime.now()
-        doc_id = document_id or str(uuid.uuid4())
+        doc_id = document_id or str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"rag-agent:{project_id}:{data_source_id}:{file_path}")
+        )
         actual_path = local_file_path or file_path
+        title = Path(actual_path).name
+        file_size = os.path.getsize(actual_path) if os.path.exists(actual_path) else None
+        file_type = Path(actual_path).suffix.lstrip(".").lower() or None
 
         logger.info("开始处理文档: %s (project=%s, doc=%s)", actual_path, project_id, doc_id)
 
         try:
             # 步骤 1: 增量检测
             checksum = self._compute_checksum(actual_path)
-            if self._is_processed(checksum, project_id):
+            if self._is_processed(checksum, project_id, doc_id):
                 logger.info("文档未变更，跳过处理: %s", actual_path)
                 return PipelineResult(
                     document_id=doc_id,
@@ -118,6 +124,19 @@ class DocumentPipeline:
                     status="skipped",
                     metadata={"checksum": checksum, "reason": "unchanged"},
                 )
+
+            self.indexer.set_document_status(
+                doc_id,
+                project_id,
+                data_source_id,
+                "processing",
+                file_path=file_path,
+                title=title,
+                source_type=source_type,
+                file_size=file_size,
+                mime_type=mime_type,
+                file_type=file_type,
+            )
 
             # 清理旧数据（重新索引时）
             try:
@@ -129,6 +148,19 @@ class DocumentPipeline:
             sections = auto_parse(actual_path, mime_type)
             if not sections:
                 logger.warning("文档解析结果为空: %s", actual_path)
+                self.indexer.set_document_status(
+                    doc_id,
+                    project_id,
+                    data_source_id,
+                    "failed",
+                    "解析结果为空",
+                    file_path=file_path,
+                    title=title,
+                    source_type=source_type,
+                    file_size=file_size,
+                    mime_type=mime_type,
+                    file_type=file_type,
+                )
                 return PipelineResult(
                     document_id=doc_id,
                     file_path=file_path,
@@ -149,6 +181,19 @@ class DocumentPipeline:
             chunks = chunker.chunk(sections)
             if not chunks:
                 logger.warning("分块结果为空: %s", actual_path)
+                self.indexer.set_document_status(
+                    doc_id,
+                    project_id,
+                    data_source_id,
+                    "failed",
+                    "分块结果为空",
+                    file_path=file_path,
+                    title=title,
+                    source_type=source_type,
+                    file_size=file_size,
+                    mime_type=mime_type,
+                    file_type=file_type,
+                )
                 return PipelineResult(
                     document_id=doc_id,
                     file_path=file_path,
@@ -170,6 +215,10 @@ class DocumentPipeline:
                     "metadata": {
                         **chunk.metadata,
                         "char_count": chunk.char_count,
+                        "source_type": source_type,
+                        "file_path": file_path,
+                        "title": title,
+                        "mime_type": mime_type,
                     },
                 }
                 for chunk in chunks
@@ -181,6 +230,12 @@ class DocumentPipeline:
                 document_id=doc_id,
                 data_source_id=data_source_id,
                 checksum=checksum,
+                file_path=file_path,
+                title=title,
+                source_type=source_type,
+                file_size=file_size,
+                mime_type=mime_type,
+                file_type=file_type,
             )
 
             duration = (datetime.now() - start_time).total_seconds() * 1000
@@ -203,6 +258,19 @@ class DocumentPipeline:
         except Exception as e:
             duration = (datetime.now() - start_time).total_seconds() * 1000
             logger.error("文档处理失败: %s - %s", actual_path, e, exc_info=True)
+            self.indexer.set_document_status(
+                doc_id,
+                project_id,
+                data_source_id,
+                "failed",
+                str(e),
+                file_path=file_path,
+                title=title,
+                source_type=source_type,
+                file_size=file_size,
+                mime_type=mime_type,
+                file_type=file_type,
+            )
             return PipelineResult(
                 document_id=doc_id,
                 file_path=file_path,
@@ -242,9 +310,9 @@ class DocumentPipeline:
                 sha256.update(block)
         return sha256.hexdigest()
 
-    def _is_processed(self, checksum: str, project_id: str) -> bool:
+    def _is_processed(self, checksum: str, project_id: str, document_id: str | None = None) -> bool:
         """检查文档是否已经处理过（基于 checksum）。"""
-        return self.indexer.check_document_processed(checksum, project_id)
+        return self.indexer.check_document_processed(checksum, project_id, document_id)
 
     @staticmethod
     def _clean_sections(sections: List[DocumentSection]) -> List[DocumentSection]:

@@ -164,7 +164,19 @@ class LocalConnector(BaseConnector):
                         try:
                             from app.tasks.sync_tasks import sync_document_task
 
-                            sync_document_task.delay(file_path, self._project_id, self._datasource_id)
+                            meta = self.connector.get_file_metadata(file_path)
+                            sync_document_task.delay({
+                                "source": "local",
+                                "file_path": file_path,
+                                "local_file_path": file_path,
+                                "project_id": self._project_id,
+                                "data_source_id": self._datasource_id,
+                                "file_size": meta.file_size if meta else 0,
+                                "mime_type": meta.mime_type if meta else "application/octet-stream",
+                                "modified_at": (meta.modified_at if meta else datetime.now()).isoformat(),
+                                "checksum": meta.checksum if meta else None,
+                                "extra": meta.extra if meta else {},
+                            })
                         except Exception as exc:
                             logger.error("触发同步任务失败: %s", exc)
 

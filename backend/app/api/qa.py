@@ -138,7 +138,10 @@ async def get_conversation(
             raise HTTPException(status_code=403, detail="Access denied")
         messages = await qa_service.get_conversation_history(conversation_id, limit=min(limit, 500))
         return {
+            "id": conversation_id,
             "conversation_id": conversation_id,
+            "title": conversation.get("title") or "新对话",
+            "project_id": str(conversation["project_id"]),
             "messages": messages,
         }
     except HTTPException:
@@ -161,7 +164,11 @@ async def submit_feedback(
             raise HTTPException(status_code=404, detail="Message not found")
         if owner_id != current_user["user_id"]:
             raise HTTPException(status_code=403, detail="Access denied")
-        await qa_service.submit_feedback(str(req.message_id), req.feedback)
+        await qa_service.submit_feedback(
+            str(req.message_id),
+            req.feedback,
+            user_id=current_user["user_id"],
+        )
         return DetailResponse(detail="ok")
     except HTTPException:
         raise

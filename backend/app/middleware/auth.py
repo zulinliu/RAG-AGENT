@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Paths that bypass authentication entirely
 PUBLIC_PATHS: frozenset[str] = frozenset({
     "/health",
+    "/api/v1/health",
     "/",
     "/docs",
     "/redoc",

@@ -31,7 +31,7 @@ def upgrade() -> None:
         sa.Column("password_hash", sa.String(255), nullable=False),
         sa.Column("display_name", sa.String(128), nullable=True),
         sa.Column("avatar_url", sa.Text, nullable=True),
-        sa.Column("role", sa.String(32), nullable=False, server_default="user"),
+        sa.Column("role", sa.String(32), nullable=False, server_default="viewer"),
         sa.Column("status", sa.String(16), nullable=False, server_default="active"),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
@@ -57,7 +57,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
         sa.Column("project_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True),
-        sa.Column("role", sa.String(32), nullable=False, server_default="user"),
+        sa.Column("role", sa.String(32), nullable=False, server_default="project_member"),
     )
     op.create_unique_constraint("uq_user_projects_user_id_project_id", "user_projects", ["user_id", "project_id"])
 

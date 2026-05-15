@@ -33,7 +33,9 @@ PLUGINS=$(curl -sf "${ES_URL}/_cat/plugins?format=json" 2>/dev/null || echo "[]"
 
 if echo "${PLUGINS}" | grep -q "analysis-ik" 2>/dev/null; then
     echo "[init-es] IK plugin already installed."
+    HAS_IK=1
 else
+    HAS_IK=0
     echo "[init-es] IK plugin not found."
     echo "[init-es] To install the IK analyzer, run INSIDE the ES container:"
     echo "[init-es]   docker exec rag-elasticsearch bin/elasticsearch-plugin install https://get.infini.cloud/elasticsearch/analysis-ik/8.19.0"
@@ -46,19 +48,37 @@ if curl -sf "${ES_URL}/${INDEX_NAME}" > /dev/null 2>&1; then
     echo "[init-es] Index '${INDEX_NAME}' already exists, skipping creation."
 else
     echo "[init-es] Creating index '${INDEX_NAME}' ..."
-    if [ -f "${MAPPINGS_FILE}" ]; then
+    if [ -f "${MAPPINGS_FILE}" ] && [ "${HAS_IK}" = "1" ]; then
         curl -sf -X PUT "${ES_URL}/${INDEX_NAME}" \
             -H "Content-Type: application/json" \
             -d @"${MAPPINGS_FILE}"
         echo ""
         echo "[init-es] Index '${INDEX_NAME}' created with mapping from ${MAPPINGS_FILE}."
     else
-        echo "[init-es] WARNING: ${MAPPINGS_FILE} not found, creating index with default mapping."
+        echo "[init-es] WARNING: IK mapping unavailable, creating index with standard analyzer fallback."
         curl -sf -X PUT "${ES_URL}/${INDEX_NAME}" \
             -H "Content-Type: application/json" \
-            -d '{"settings": {"number_of_shards": 1, "number_of_replicas": 1}}'
+            -d '{
+              "settings": {"number_of_shards": 1, "number_of_replicas": 1},
+              "mappings": {
+                "properties": {
+                  "project_id": {"type": "keyword"},
+                  "document_id": {"type": "keyword"},
+                  "chunk_id": {"type": "keyword"},
+                  "content": {"type": "text"},
+                  "title": {"type": "text"},
+                  "parent_title": {"type": "text"},
+                  "chunk_type": {"type": "keyword"},
+                  "source_type": {"type": "keyword"},
+                  "file_path": {"type": "keyword"},
+                  "mime_type": {"type": "keyword"},
+                  "created_at": {"type": "date", "format": "strict_date_optional_time||epoch_millis"},
+                  "modified_at": {"type": "date", "format": "strict_date_optional_time||epoch_millis"}
+                }
+              }
+            }'
         echo ""
-        echo "[init-es] Index '${INDEX_NAME}' created with default settings."
+        echo "[init-es] Index '${INDEX_NAME}' created with fallback mapping."
     fi
 fi
 

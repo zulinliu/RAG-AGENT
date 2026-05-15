@@ -55,7 +55,7 @@ class DataSourceService:
             project_id=project_id,
             source_type=source_type,
             name=name,
-            config=config or {},
+            config=_normalize_config(config or {}),
         )
         self._db.add(data_source)
         await self._db.flush()
@@ -112,6 +112,8 @@ class DataSourceService:
         allowed_fields = {"name", "config", "is_active"}
         for field, value in kwargs.items():
             if field in allowed_fields:
+                if field == "config" and value is not None:
+                    value = _normalize_config(value)
                 setattr(ds, field, value)
 
         await self._db.flush()
@@ -152,6 +154,7 @@ class DataSourceService:
         Returns:
             ConnectionTestResult with success status.
         """
+        config = _normalize_config(config)
         try:
             if source_type == "local":
                 path = config.get("path", "")
@@ -179,9 +182,10 @@ class DataSourceService:
                     )
 
             elif source_type == "dingtalk":
+                mode = config.get("mode", "api")
                 app_key = config.get("app_key", "")
                 app_secret = config.get("app_secret", "")
-                if not app_key or not app_secret:
+                if mode == "api" and (not app_key or not app_secret):
                     return ConnectionTestResult(
                         success=False,
                         message="DingTalk app_key or app_secret not configured",
@@ -193,9 +197,20 @@ class DataSourceService:
                     message=f"Unknown source type: {source_type}",
                 )
 
+            import asyncio
+
+            connector = _instantiate_connector(source_type, config)
+            try:
+                await asyncio.to_thread(connector.connect)
+            finally:
+                try:
+                    connector.disconnect()
+                except Exception:
+                    pass
+
             return ConnectionTestResult(
                 success=True,
-                message=f"Connection to {source_type} data source validated",
+                message=f"Successfully connected to {source_type} data source",
             )
 
         except Exception as exc:
@@ -220,7 +235,7 @@ class DataSourceService:
 
         try:
             source_type = ds.source_type
-            config = ds.config or {}
+            config = _normalize_config(ds.config or {})
 
             # Basic config validation before attempting real connection
             if source_type == "local":
@@ -249,9 +264,10 @@ class DataSourceService:
                     )
 
             elif source_type == "dingtalk":
+                mode = config.get("mode", "api")
                 app_key = config.get("app_key", "")
                 app_secret = config.get("app_secret", "")
-                if not app_key or not app_secret:
+                if mode == "api" and (not app_key or not app_secret):
                     return ConnectionTestResult(
                         success=False,
                         message="DingTalk app_key or app_secret not configured",
@@ -312,11 +328,11 @@ class DataSourceService:
 
         # Dispatch Celery task (imported lazily to avoid circular imports)
         try:
-            from app.tasks.sync_tasks import batch_sync_task
+            from app.tasks.sync_tasks import sync_data_source_task
 
-            batch_sync_task.delay([], str(ds.project_id))
+            sync_data_source_task.delay(str(ds.id))
         except ImportError:
-            # Tasks module not yet implemented; status will remain syncing
+            # Worker package unavailable in minimal API-only environments.
             pass
 
     async def get_sync_status(
@@ -352,6 +368,49 @@ class DataSourceService:
         )
 
 
+def _normalize_allowed_extensions(raw: Any) -> list[str] | None:
+    """Normalize pattern/extension config into ['.pdf', '.md'] format."""
+    if raw in (None, "", "*", "*.*"):
+        return None
+    values: list[Any]
+    if isinstance(raw, str):
+        values = [item.strip() for item in raw.split(",")]
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        return None
+
+    result: list[str] = []
+    for item in values:
+        value = str(item).strip().lower()
+        if not value or value in ("*", "*.*"):
+            continue
+        if value.startswith("*."):
+            value = value[1:]
+        elif not value.startswith("."):
+            value = f".{value}"
+        result.append(value)
+    return sorted(set(result)) or None
+
+
+def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize connector config while preserving original input fields."""
+    normalized = dict(config or {})
+    extensions = _normalize_allowed_extensions(
+        normalized.get("allowed_extensions")
+        or normalized.get("pattern")
+        or normalized.get("patterns")
+    )
+    if extensions is not None:
+        normalized["allowed_extensions"] = extensions
+    return normalized
+
+
+def _extension_set(config: dict[str, Any]) -> set[str] | None:
+    extensions = config.get("allowed_extensions")
+    return set(extensions) if extensions else None
+
+
 def _instantiate_connector(source_type: str, config: dict[str, Any]) -> Any:
     """Create a connector instance from source type and config dict."""
     from app.connectors.local import LocalConnector
@@ -359,14 +418,20 @@ def _instantiate_connector(source_type: str, config: dict[str, Any]) -> Any:
     from app.connectors.nas import NASConnector
     from app.connectors.dingtalk import DingTalkConnector
 
+    config = _normalize_config(config)
+
     if source_type == "local":
-        return LocalConnector(watch_dir=config["path"])
+        return LocalConnector(
+            watch_dir=config["path"],
+            allowed_extensions=_extension_set(config),
+        )
 
     elif source_type == "seafile":
         return SeafileConnector(
             server_url=config["server_url"],
             token=config.get("access_token", ""),
             repo_id=config.get("repo_id", ""),
+            allowed_extensions=_extension_set(config),
         )
 
     elif source_type == "nas":
@@ -378,6 +443,7 @@ def _instantiate_connector(source_type: str, config: dict[str, Any]) -> Any:
             password=config.get("password"),
             mount_point=config.get("mount_point"),
             remote_path=config.get("remote_path", "/"),
+            allowed_extensions=_extension_set(config),
         )
 
     elif source_type == "dingtalk":

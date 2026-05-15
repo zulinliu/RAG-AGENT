@@ -30,6 +30,7 @@ export default function ChatPage() {
   const [projectsLoading, setProjectsLoading] = useState(true);
   const streamingContentRef = useRef("");
   const completedRef = useRef(false);
+  const finalMetadataRef = useRef<Record<string, unknown> | null>(null);
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -135,10 +136,16 @@ export default function ChatPage() {
       api
         .get<{
           id: string;
-          messages: ChatMessageData[];
+          messages: Array<ChatMessageData & { message_id?: string; confidence_score?: number }>;
         }>(`/qa/conversations/${convId}`)
         .then((data) => {
-          setMessages(data.messages || []);
+          setMessages(
+            (data.messages || []).map((msg) => ({
+              ...msg,
+              id: msg.id || msg.message_id || crypto.randomUUID(),
+              confidence: msg.confidence ?? msg.confidence_score,
+            }))
+          );
         })
         .catch(() => {
           setMessages([]);
@@ -166,6 +173,7 @@ export default function ChatPage() {
       setIsStreaming(true);
       setStreamingContent("");
       completedRef.current = false;
+      finalMetadataRef.current = null;
 
       const assistantMessageId = crypto.randomUUID();
 
@@ -173,22 +181,32 @@ export default function ChatPage() {
         "/qa/stream",
         {
           project_id: currentProject.id,
-          query,
+          question: query,
           conversation_id: currentConversationId || undefined,
         },
         {
           onChunk: (text) => {
             setStreamingContent((prev) => prev + text);
           },
-          onDone: () => {
+          onDone: (metadata) => {
+            if (completedRef.current) return;
+            if (metadata) finalMetadataRef.current = metadata;
             completedRef.current = true;
             setIsStreaming(false);
             const content = streamingContentRef.current;
             if (content) {
+              const finalMetadata = finalMetadataRef.current;
+              if (!currentConversationId && typeof finalMetadata?.conversation_id === "string") {
+                setCurrentConversationId(finalMetadata.conversation_id);
+              }
               const assistantMessage: ChatMessageData = {
-                id: assistantMessageId,
+                id: String(finalMetadata?.message_id || assistantMessageId),
                 role: "assistant",
                 content,
+                confidence:
+                  typeof finalMetadata?.confidence === "number"
+                    ? finalMetadata.confidence
+                    : undefined,
               };
               setMessages((msgs) => [...msgs, assistantMessage]);
             }
@@ -233,6 +251,7 @@ export default function ChatPage() {
   );
 
   const handleStop = useCallback(() => {
+    completedRef.current = true;
     abortRef.current?.abort();
     setIsStreaming(false);
     const content = streamingContentRef.current;

@@ -20,8 +20,8 @@ import type { Project } from "@/lib/types";
 interface ProjectDataSource {
   id: string;
   name: string;
-  type: string;
-  status: string;
+  source_type: string;
+  sync_status: string;
 }
 
 interface ProjectFormData {
@@ -311,9 +311,9 @@ export default function ProjectsPage() {
                         </span>
                       </div>
                       <span
-                        className={`text-xs ${ds.status === "active" ? "text-[var(--color-success)]" : "text-[var(--color-text-muted)]"}`}
+                        className={`text-xs ${ds.sync_status === "completed" ? "text-[var(--color-success)]" : "text-[var(--color-text-muted)]"}`}
                       >
-                        {ds.status === "active" ? "已连接" : ds.status}
+                        {ds.sync_status === "completed" ? "已同步" : ds.sync_status}
                       </span>
                     </div>
                   ))}

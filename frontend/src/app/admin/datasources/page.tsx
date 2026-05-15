@@ -16,13 +16,6 @@ import { useToast } from "@/components/ui/toast";
 import { DataSourceForm } from "@/components/admin/data-source-form";
 import type { Project, DataSource } from "@/lib/types";
 
-interface SyncStatus {
-  status: string;
-  progress?: number;
-  last_synced_at?: string;
-  error?: string;
-}
-
 function StatusIcon({ status }: { status: string }) {
   switch (status) {
     case "active":
@@ -64,31 +57,14 @@ export default function DataSourcesPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [projectsData, ...dsResults] = await Promise.all([
+      const [projectsData, dataSourceData] = await Promise.all([
         api.get<Project[]>("/projects"),
-        ...(selectedProjectId === "all"
-          ? []
-          : [api.get<DataSource[]>(`/projects/${selectedProjectId}/datasources`)]),
+        selectedProjectId === "all"
+          ? api.get<DataSource[]>("/datasources")
+          : api.get<DataSource[]>(`/projects/${selectedProjectId}/datasources`),
       ]);
       setProjects(projectsData);
-
-      if (selectedProjectId === "all") {
-        // TODO: 后端应提供 GET /api/v1/datasources 端点返回所有数据源，避免 N+1 查询
-        const dsResults = await Promise.allSettled(
-          projectsData.map((p) =>
-            api.get<DataSource[]>(`/projects/${p.id}/datasources`)
-          )
-        );
-        const allDs: DataSource[] = [];
-        for (const result of dsResults) {
-          if (result.status === "fulfilled") {
-            allDs.push(...result.value);
-          }
-        }
-        setDataSources(allDs);
-      } else {
-        setDataSources(dsResults[0] || []);
-      }
+      setDataSources(dataSourceData);
     } catch {
       addToast("error", "加载数据失败");
     } finally {
@@ -122,11 +98,13 @@ export default function DataSourcesPage() {
 
   const handleTestConnection = async (dsId: string) => {
     try {
-      const status = await api.get<SyncStatus>(`/datasources/${dsId}/status`);
-      if (status.status === "active" || status.status === "completed") {
+      const result = await api.post<{ success: boolean; message: string }>(
+        `/datasources/${dsId}/test`
+      );
+      if (result.success) {
         addToast("success", "连接测试成功");
       } else {
-        addToast("warning", `连接状态: ${statusLabel(status.status)}`);
+        addToast("warning", result.message || "连接测试未通过");
       }
     } catch (err) {
       addToast(
@@ -209,14 +187,14 @@ export default function DataSourcesPage() {
                         {ds.name}
                       </h3>
                       <span className="rounded bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-xs text-[var(--color-text-muted)]">
-                        {ds.type}
+                        {ds.source_type}
                       </span>
                     </div>
                     <div className="mt-1 flex items-center gap-3 text-xs text-[var(--color-text-muted)]">
                       <span>项目: {projectName}</span>
                       <span className="flex items-center gap-1">
-                        <StatusIcon status={ds.status} />
-                        {statusLabel(ds.status)}
+                        <StatusIcon status={ds.sync_status} />
+                        {statusLabel(ds.sync_status)}
                       </span>
                       {ds.last_synced_at && (
                         <span>

@@ -10,9 +10,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.models.project import DataSource
 from app.schemas import DetailResponse
 from app.schemas.datasource import (
     ConnectionTestResult,
@@ -64,6 +66,31 @@ async def test_connection_with_config(
         source_type=body.source_type,
         config=body.config,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/datasources
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/datasources",
+    response_model=list[DataSourceResponse],
+)
+async def list_accessible_data_sources(
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[DataSourceResponse]:
+    """List active data sources visible to the current user."""
+    query = select(DataSource).where(DataSource.is_active == True)  # noqa: E712
+    if current_user.get("role") != "system_admin":
+        project_ids = current_user.get("project_ids", [])
+        if not project_ids:
+            return []
+        scoped_project_ids = [uuid.UUID(str(pid)) for pid in project_ids]
+        query = query.where(DataSource.project_id.in_(scoped_project_ids))
+    result = await db.execute(query.order_by(DataSource.name))
+    return [_datasource_to_response(ds) for ds in result.scalars().all()]
 
 
 # ---------------------------------------------------------------------------
@@ -147,17 +174,19 @@ async def update_data_source(
     """Update a data source."""
     svc = DataSourceService(db)
     try:
-        ds = await svc.update_data_source(
-            uuid.UUID(data_source_id),
-            **body.model_dump(exclude_unset=True),
-        )
+        ds_id = uuid.UUID(data_source_id)
+        existing = await svc.get_data_source(ds_id)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
 
-    check_project_permission(current_user, str(ds.project_id))
+    check_project_permission(current_user, str(existing.project_id))
+    ds = await svc.update_data_source(
+        ds_id,
+        **body.model_dump(exclude_unset=True),
+    )
     return _datasource_to_response(ds)
 
 
@@ -314,6 +343,7 @@ def _datasource_to_response(ds: Any) -> DataSourceResponse:
         config=_sanitize_config(raw_config),
         sync_status=ds.sync_status,
         last_synced_at=ds.last_synced_at,
+        last_sync_error=ds.last_sync_error,
         is_active=ds.is_active,
         created_at=ds.created_at,
         updated_at=ds.updated_at,

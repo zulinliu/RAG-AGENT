@@ -103,7 +103,8 @@ export function ChatMessage({
 
   const handleFeedback = async (type: "thumbs_up" | "thumbs_down") => {
     if (!messageId) return;
-    const newFeedback = currentFeedback === type ? null : type;
+    if (currentFeedback === type) return;
+    const newFeedback = type;
     setCurrentFeedback(newFeedback);
     try {
       if (newFeedback) {

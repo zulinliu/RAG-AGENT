@@ -1,9 +1,11 @@
 """Celery 同步任务。"""
 
 import logging
+import os
 import uuid
 from dataclasses import asdict
 from datetime import datetime as _dt
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .celery_app import celery_app
@@ -46,12 +48,28 @@ def sync_document_task(
         处理结果字典
     """
     from app.connectors.base import SyncTask
-    from app.processors.pipeline import DocumentPipeline
-    from app.config import get_settings
 
-    logger.info("开始同步文档: %s (project=%s)", sync_task_data["file_path"], sync_task_data["project_id"])
+    document_id = sync_task_data.get("document_id")
+    file_path = sync_task_data.get("file_path", "")
+    project_id = sync_task_data.get("project_id", "")
+
+    logger.info("开始同步文档: %s (project=%s)", file_path, project_id)
 
     try:
+        pipeline = _get_pipeline()
+
+        if sync_task_data.get("action") == "delete":
+            target_id = document_id or file_path
+            if not target_id:
+                raise ValueError("delete action requires document_id or file_path")
+            deleted = pipeline.delete_document(str(target_id))
+            return {
+                "document_id": str(target_id),
+                "status": "success" if deleted else "error",
+                "chunk_count": 0,
+                "error_message": None if deleted else "delete failed",
+            }
+
         modified = sync_task_data["modified_at"]
         if isinstance(modified, str):
             modified = _dt.fromisoformat(modified)
@@ -68,12 +86,14 @@ def sync_document_task(
             extra=sync_task_data.get("extra", {}),
         )
 
-        pipeline = _get_pipeline()
         result = pipeline.process_document(
             file_path=task.file_path,
             project_id=task.project_id,
             data_source_id=task.data_source_id,
             mime_type=task.mime_type,
+            document_id=document_id,
+            local_file_path=sync_task_data.get("local_file_path"),
+            source_type=task.source,
         )
 
         logger.info(
@@ -109,6 +129,101 @@ def sync_document_task(
         "chunk_count": 0,
         "error_message": "unexpected",
     }
+
+
+@celery_app.task(
+    name="app.tasks.sync_tasks.sync_data_source_task",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def sync_data_source_task(self: Any, data_source_id: str) -> Dict[str, Any]:
+    """Synchronize one configured data source end to end.
+
+    The task connects to the source, lists files, downloads remote files into a
+    worker-visible staging directory, and processes each file through the
+    document pipeline.
+    """
+    logger.info("开始同步数据源: %s", data_source_id)
+    ds_config = _get_data_source_config(data_source_id)
+    if ds_config is None:
+        return {"data_source_id": data_source_id, "status": "error", "error": "data source not found"}
+
+    results: Dict[str, Any] = {
+        "data_source_id": data_source_id,
+        "status": "running",
+        "total": 0,
+        "success": 0,
+        "skipped": 0,
+        "error": 0,
+        "details": [],
+    }
+
+    _update_data_source_status(data_source_id, "syncing")
+    connector = None
+    try:
+        connector = _create_connector(ds_config)
+        connector.connect()
+        files = connector.list_files(space_id=ds_config.get("space_id", ""))
+        results["total"] = len(files)
+
+        staging_dir = _staging_dir(data_source_id)
+        for file_meta in files:
+            try:
+                local_path = connector.download_file(file_meta.file_path, str(staging_dir))
+                task_data = {
+                    "source": ds_config["type"],
+                    "file_path": file_meta.file_path,
+                    "local_file_path": local_path,
+                    "project_id": ds_config["project_id"],
+                    "data_source_id": ds_config["id"],
+                    "file_size": file_meta.file_size,
+                    "mime_type": file_meta.mime_type,
+                    "modified_at": file_meta.modified_at.isoformat(),
+                    "checksum": file_meta.checksum,
+                    "extra": file_meta.extra,
+                }
+                task_result = sync_document_task.apply(args=[task_data]).get()
+                status = task_result.get("status", "error")
+                if status == "success":
+                    results["success"] += 1
+                elif status == "skipped":
+                    results["skipped"] += 1
+                else:
+                    results["error"] += 1
+                results["details"].append(task_result)
+            except Exception as exc:
+                logger.exception("文件同步失败: %s", file_meta.file_path)
+                results["error"] += 1
+                results["details"].append({
+                    "file_path": file_meta.file_path,
+                    "status": "error",
+                    "error_message": str(exc),
+                })
+
+        final_status = "completed" if results["error"] == 0 else "failed"
+        results["status"] = final_status
+        _update_data_source_status(
+            data_source_id,
+            final_status,
+            error_message=None if final_status == "completed" else f"{results['error']} file(s) failed",
+        )
+        return results
+    except Exception as exc:
+        logger.exception("数据源同步失败: %s", data_source_id)
+        _update_data_source_status(data_source_id, "failed", error_message=str(exc))
+        try:
+            self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            return {"data_source_id": data_source_id, "status": "error", "error": str(exc)}
+        return {"data_source_id": data_source_id, "status": "retrying", "error": str(exc)}
+    finally:
+        if connector is not None:
+            try:
+                connector.disconnect()
+            except Exception:
+                logger.debug("connector disconnect failed", exc_info=True)
 
 
 @celery_app.task(
@@ -192,39 +307,13 @@ def scheduled_sync_task(self: Any) -> Dict[str, Any]:
     }
 
     try:
-        # TODO: 从数据库或配置中读取所有数据源配置
-        # 这里是框架代码，实际实现需要根据业务逻辑获取数据源列表
         data_sources = _get_configured_data_sources()
 
         for ds_config in data_sources:
             try:
-                connector = _create_connector(ds_config)
-                connector.connect()
-                files = connector.list_files()
-
                 results["data_sources_scanned"] += 1
-                results["files_detected"] += len(files)
-
-                # 构建同步任务
-                sync_tasks = []
-                for file_meta in files:
-                    task_data = {
-                        "source": ds_config["type"],
-                        "file_path": file_meta.file_path,
-                        "project_id": ds_config["project_id"],
-                        "data_source_id": ds_config["id"],
-                        "file_size": file_meta.file_size,
-                        "mime_type": file_meta.mime_type,
-                        "modified_at": file_meta.modified_at.isoformat(),
-                        "extra": file_meta.extra,
-                    }
-                    sync_tasks.append(task_data)
-
-                if sync_tasks:
-                    batch_sync_task.delay(sync_tasks, ds_config["project_id"])
-                    results["sync_triggered"] += len(sync_tasks)
-
-                connector.disconnect()
+                sync_data_source_task.delay(ds_config["id"])
+                results["sync_triggered"] += 1
 
             except Exception as e:
                 logger.error("数据源同步失败: %s - %s", ds_config.get("id"), e)
@@ -244,6 +333,147 @@ def scheduled_sync_task(self: Any) -> Dict[str, Any]:
 # ------------------------------------------------------------------
 # 辅助函数
 # ------------------------------------------------------------------
+
+def _staging_dir(data_source_id: str) -> Path:
+    """Return a shared worker-visible staging directory for downloaded files."""
+    base = Path(os.getenv("UPLOAD_DIR", "/app/uploads")) / "sync" / data_source_id
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _normalize_allowed_extensions(raw: Any) -> list[str] | None:
+    """Normalize pattern/extension config into ['.pdf', '.md'] format."""
+    if raw in (None, "", "*", "*.*"):
+        return None
+    if isinstance(raw, str):
+        values = [item.strip() for item in raw.split(",")]
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        return None
+
+    result: list[str] = []
+    for item in values:
+        value = str(item).strip().lower()
+        if not value or value in ("*", "*.*"):
+            continue
+        if value.startswith("*."):
+            value = value[1:]
+        elif not value.startswith("."):
+            value = f".{value}"
+        result.append(value)
+    return sorted(set(result)) or None
+
+
+def _extension_set(config: Dict[str, Any]) -> set[str] | None:
+    extensions = config.get("allowed_extensions")
+    return set(extensions) if extensions else None
+
+
+def _flatten_data_source_row(row: Any) -> Dict[str, Any]:
+    config = row.config or {}
+    return {
+        "id": str(row.id),
+        "project_id": str(row.project_id),
+        "type": row.source_type,
+        "config": config,
+        "name": row.name,
+        "path": config.get("path", ""),
+        "server_url": config.get("server_url", ""),
+        "token": config.get("access_token") or config.get("api_token", ""),
+        "repo_id": config.get("repo_id", ""),
+        "sync_dir": config.get("sync_dir", "/"),
+        "allowed_extensions": _normalize_allowed_extensions(
+            config.get("allowed_extensions")
+            or config.get("pattern")
+            or config.get("patterns")
+        ),
+        "protocol": config.get("protocol", "nfs"),
+        "host": config.get("host"),
+        "share_name": config.get("share_name"),
+        "username": config.get("username"),
+        "password": config.get("password"),
+        "mount_point": config.get("mount_point"),
+        "remote_path": config.get("remote_path") or config.get("share_path", "/"),
+        "mode": config.get("mode", "api"),
+        "app_key": config.get("app_key"),
+        "app_secret": config.get("app_secret"),
+        "cli_path": config.get("cli_path"),
+        "space_id": config.get("space_id", ""),
+    }
+
+
+def _get_data_source_config(data_source_id: str) -> Dict[str, Any] | None:
+    """Read one active data source from PostgreSQL."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    try:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.orm import Session
+
+        engine = create_engine(settings.db.sync_url, pool_pre_ping=True)
+        try:
+            with Session(engine) as session:
+                row = session.execute(
+                    text(
+                        """
+                        SELECT id, project_id, source_type, config, name
+                        FROM data_sources
+                        WHERE id = :id AND is_active = true
+                        """
+                    ),
+                    {"id": data_source_id},
+                ).fetchone()
+                return _flatten_data_source_row(row) if row else None
+        finally:
+            engine.dispose()
+    except Exception:
+        logger.exception("读取数据源配置失败: %s", data_source_id)
+        return None
+
+
+def _update_data_source_status(
+    data_source_id: str,
+    status: str,
+    error_message: str | None = None,
+) -> None:
+    """Persist data-source sync status."""
+    from app.config import get_settings
+
+    try:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.orm import Session
+
+        engine = create_engine(get_settings().db.sync_url, pool_pre_ping=True)
+        try:
+            with Session(engine) as session:
+                session.execute(
+                    text(
+                        """
+                        UPDATE data_sources
+                        SET sync_status = :status,
+                            last_sync_error = :error_message,
+                            last_synced_at = CASE
+                                WHEN :status IN ('completed', 'failed') THEN NOW()
+                                ELSE last_synced_at
+                            END,
+                            updated_at = NOW()
+                        WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": data_source_id,
+                        "status": status,
+                        "error_message": error_message,
+                    },
+                )
+                session.commit()
+        finally:
+            engine.dispose()
+    except Exception:
+        logger.exception("更新数据源同步状态失败: %s", data_source_id)
+
 
 def _get_configured_data_sources() -> List[Dict[str, Any]]:
     """从数据库获取所有活跃的、状态为 idle 的数据源配置。"""
@@ -266,38 +496,15 @@ def _get_configured_data_sources() -> List[Dict[str, Any]]:
                         """
                         SELECT id, project_id, source_type, config, name
                         FROM data_sources
-                        WHERE is_active = true AND sync_status = 'idle'
+                        WHERE is_active = true
+                          AND COALESCE(sync_status, 'idle') <> 'syncing'
                         """
                     )
                 ).fetchall()
 
                 result: List[Dict[str, Any]] = []
                 for row in rows:
-                    result.append({
-                        "id": str(row.id),
-                        "project_id": str(row.project_id),
-                        "type": row.source_type,
-                        "config": row.config or {},
-                        "name": row.name,
-                        # Flatten config fields that _create_connector expects at top level
-                        "path": (row.config or {}).get("path", ""),
-                        "server_url": (row.config or {}).get("server_url", ""),
-                        "token": (row.config or {}).get("access_token", ""),
-                        "repo_id": (row.config or {}).get("repo_id", ""),
-                        "sync_dir": (row.config or {}).get("sync_dir", "/"),
-                        "allowed_extensions": (row.config or {}).get("allowed_extensions"),
-                        "protocol": (row.config or {}).get("protocol", "nfs"),
-                        "host": (row.config or {}).get("host"),
-                        "share_name": (row.config or {}).get("share_name"),
-                        "username": (row.config or {}).get("username"),
-                        "password": (row.config or {}).get("password"),
-                        "mount_point": (row.config or {}).get("mount_point"),
-                        "remote_path": (row.config or {}).get("remote_path", "/"),
-                        "mode": (row.config or {}).get("mode", "api"),
-                        "app_key": (row.config or {}).get("app_key"),
-                        "app_secret": (row.config or {}).get("app_secret"),
-                        "cli_path": (row.config or {}).get("cli_path"),
-                    })
+                    result.append(_flatten_data_source_row(row))
 
                 return result
         finally:
@@ -320,7 +527,7 @@ def _create_connector(config: Dict[str, Any]) -> Any:
     if ds_type == "local":
         return LocalConnector(
             watch_dir=config["path"],
-            allowed_extensions=config.get("allowed_extensions"),
+            allowed_extensions=_extension_set(config),
             project_id=config.get("project_id", ""),
             datasource_id=config.get("id", ""),
         )
@@ -330,7 +537,7 @@ def _create_connector(config: Dict[str, Any]) -> Any:
             token=config["token"],
             repo_id=config["repo_id"],
             sync_dir=config.get("sync_dir", "/"),
-            allowed_extensions=config.get("allowed_extensions"),
+            allowed_extensions=_extension_set(config),
         )
     elif ds_type == "nas":
         return NASConnector(
@@ -341,7 +548,7 @@ def _create_connector(config: Dict[str, Any]) -> Any:
             password=config.get("password"),
             mount_point=config.get("mount_point"),
             remote_path=config.get("remote_path", "/"),
-            allowed_extensions=config.get("allowed_extensions"),
+            allowed_extensions=_extension_set(config),
         )
     elif ds_type == "dingtalk":
         return DingTalkConnector(

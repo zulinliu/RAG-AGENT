@@ -79,7 +79,7 @@ class AnswerGenerator:
                 yield chunk
         except Exception:
             logger.exception("stream answer generation failed")
-            yield '{"type": "error", "content": "抱歉，生成答案时出现错误，请稍后重试。"}'
+            yield "抱歉，生成答案时出现错误，请稍后重试。"
 
     # ------------------------------------------------------------------
     # Internal helpers

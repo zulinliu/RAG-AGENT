@@ -11,6 +11,8 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
@@ -229,7 +231,8 @@ async def upload_document(
 
     check_project_permission(current_user, str(project_id))
 
-    if not file.filename:        raise HTTPException(
+    if not file.filename:
+        raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Filename is required",
         )
@@ -302,21 +305,25 @@ async def upload_document(
     safe_filename = re.sub(r'[^\w\s.\-]', '_', os.path.basename(raw_name))
     if not safe_filename or safe_filename.startswith('.'):
         safe_filename = "unnamed_file"
-    minio_path = f"{project_id}/{uuid.uuid4()}/{safe_filename}"
+    storage_dir = Path(os.getenv("UPLOAD_DIR", "/app/uploads")) / str(project_id)
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    local_path = storage_dir / f"{uuid.uuid4()}_{safe_filename}"
+    local_path.write_bytes(content)
+
+    object_path = f"{project_id}/{local_path.name}"
     try:
         from app.core.minio_client import get_minio_client
 
         client = get_minio_client()
-        client.put_object(
+        client.ensure_bucket(get_settings().minio.bucket)
+        client.put_bytes(
             bucket_name=get_settings().minio.bucket,
-            object_name=minio_path,
-            data=content,
-            length=len(content),
+            object_name=object_path,
+            content=content,
             content_type=file.content_type or "application/octet-stream",
         )
     except Exception:
-        # MinIO not available in dev; store path only
-        pass
+        logger.info("MinIO unavailable; using local upload path: %s", local_path)
 
     # Create document record
     from app.models.document import Document
@@ -325,7 +332,7 @@ async def upload_document(
         project_id=project_id,
         source_type="local",
         title=file.filename,
-        file_path=minio_path,
+        file_path=str(local_path),
         file_size=len(content),
         mime_type=file.content_type,
         file_type=file_type,
@@ -343,7 +350,14 @@ async def upload_document(
             "source": "upload",
             "document_id": str(doc.id),
             "project_id": str(project_id),
-            "file_path": minio_path,
+            "data_source_id": "",
+            "file_path": str(local_path),
+            "local_file_path": str(local_path),
+            "file_size": len(content),
+            "mime_type": content_type,
+            "modified_at": datetime.now(timezone.utc).isoformat(),
+            "checksum": content_hash,
+            "extra": {"object_path": object_path, "filename": file.filename},
         })
     except ImportError:
         logger.warning("Task module not available; document will not be processed automatically")
@@ -384,8 +398,11 @@ def _document_to_response(doc: Any) -> DocumentResponse:
         "project_id": doc.project_id,
         "data_source_id": doc.data_source_id,
         "title": doc.title,
+        "filename": doc.title,
         "file_path": doc.file_path,
         "file_type": getattr(doc, "file_type", None) or doc.source_type or "",
+        "file_size": doc.file_size,
+        "size": doc.file_size,
         "content_hash": doc.content_hash,
         "status": doc.status,
         "chunk_count": 0,

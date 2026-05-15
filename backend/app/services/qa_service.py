@@ -61,6 +61,7 @@ class QAService:
     ) -> AskResponse:
         """同步问答。"""
         # 创建或复用对话
+        new_conversation = conversation_id is None
         if not conversation_id:
             conversation_id = await self._session.create_conversation(
                 user_id, project_id
@@ -76,6 +77,8 @@ class QAService:
         user_msg_id = await self._session.add_message(
             conversation_id, "user", query
         )
+        if new_conversation:
+            await self._session.set_conversation_title(conversation_id, query)
 
         # 检查查询结果缓存
         cached_result: dict[str, Any] | None = None
@@ -156,6 +159,7 @@ class QAService:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """流式问答，逐 token 输出。"""
         # 创建或复用对话
+        new_conversation = conversation_id is None
         if not conversation_id:
             conversation_id = await self._session.create_conversation(
                 user_id, project_id
@@ -163,6 +167,8 @@ class QAService:
 
         # 记录用户消息
         await self._session.add_message(conversation_id, "user", query)
+        if new_conversation:
+            await self._session.set_conversation_title(conversation_id, query)
 
         # 获取对话历史
         history = await self._session.get_conversation_history_for_llm(conversation_id)
@@ -220,7 +226,7 @@ class QAService:
         )
 
         # Record assistant message
-        await self._session.add_message(
+        assistant_message_id = await self._session.add_message(
             conversation_id,
             "assistant",
             full_answer,
@@ -236,6 +242,8 @@ class QAService:
         yield {
             "type": "done",
             "data": {
+                "conversation_id": conversation_id,
+                "message_id": assistant_message_id,
                 "citations": verification.valid_citations,
                 "confidence": confidence,
                 "sources_used": [d.chunk_id for d in state.reranked_docs],
@@ -247,11 +255,16 @@ class QAService:
         self,
         message_id: str,
         feedback: str,
+        user_id: str | None = None,
     ) -> None:
         """提交用户反馈。"""
         if feedback not in ("thumbs_up", "thumbs_down"):
             raise ValueError(f"Invalid feedback type: {feedback}")
         await self._session.add_feedback(message_id, feedback)
+        if feedback == "thumbs_down" and user_id:
+            await self._session.create_feedback_bad_case(message_id, user_id)
+        elif feedback == "thumbs_up":
+            await self._session.resolve_feedback_bad_case(message_id)
 
     async def list_conversations(
         self,

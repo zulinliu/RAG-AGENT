@@ -141,7 +141,7 @@ export const api = {
 
 export interface SSECallbacks {
   onChunk: (text: string) => void;
-  onDone: () => void;
+  onDone: (metadata?: Record<string, unknown>) => void;
   onError: (error: Error) => void;
 }
 
@@ -221,13 +221,29 @@ export function createSSEStream(
             return;
           }
           try {
-            const parsed = JSON.parse(data) as { text?: string; error?: string };
-            if (parsed.error) {
-              callbacks.onError(new Error(parsed.error));
+            const parsed = JSON.parse(data) as {
+              type?: string;
+              data?: unknown;
+              text?: string;
+              error?: string;
+              content?: string;
+            };
+            if (parsed.error || parsed.type === "error") {
+              callbacks.onError(new Error(String(parsed.error || parsed.data || parsed.content || "请求失败")));
               return;
             }
-            if (parsed.text) {
+            if (parsed.type === "done") {
+              callbacks.onDone(
+                typeof parsed.data === "object" && parsed.data !== null
+                  ? (parsed.data as Record<string, unknown>)
+                  : undefined
+              );
+              return;
+            }
+            if (typeof parsed.text === "string") {
               callbacks.onChunk(parsed.text);
+            } else if (parsed.type === "text" && typeof parsed.data === "string") {
+              callbacks.onChunk(parsed.data);
             }
           } catch {
             // skip malformed chunks

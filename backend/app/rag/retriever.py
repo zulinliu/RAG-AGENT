@@ -118,7 +118,6 @@ class HybridRetriever:
                                     "query": query_text,
                                     "fields": ["content^2", "parent_title^1"],
                                     "type": "best_fields",
-                                    "analyzer": "ik_max_word",
                                 }
                             }
                         ],

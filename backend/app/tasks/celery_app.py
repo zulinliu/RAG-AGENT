@@ -57,6 +57,7 @@ celery_app.conf.update(
     # 任务路由
     task_routes={
         "app.tasks.sync_tasks.sync_document_task": {"queue": "sync_queue"},
+        "app.tasks.sync_tasks.sync_data_source_task": {"queue": "sync_queue"},
         "app.tasks.sync_tasks.batch_sync_task": {"queue": "sync_queue"},
         "app.tasks.sync_tasks.scheduled_sync_task": {"queue": "sync_queue"},
     },

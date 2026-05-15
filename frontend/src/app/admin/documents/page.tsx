@@ -17,9 +17,11 @@ import { useToast } from "@/components/ui/toast";
 
 interface Document {
   id: string;
-  filename: string;
+  title: string;
+  filename?: string;
   status: string;
-  size: number;
+  file_size?: number;
+  size?: number;
   chunk_count: number;
   project_id: string;
   created_at: string;
@@ -157,7 +159,7 @@ export default function DocumentsPage() {
   };
 
   const handleViewChunks = async (doc: Document) => {
-    setSelectedDocName(doc.filename);
+    setSelectedDocName(doc.filename || doc.title);
     setChunksModalOpen(true);
     setChunksLoading(true);
     try {
@@ -309,7 +311,7 @@ export default function DocumentsPage() {
                           className="text-[var(--color-primary)]"
                         />
                         <span className="text-sm text-[var(--color-text-primary)]">
-                          {doc.filename}
+                          {doc.filename || doc.title}
                         </span>
                       </div>
                     </td>
@@ -321,7 +323,7 @@ export default function DocumentsPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-[var(--color-text-muted)]">
-                      {formatFileSize(doc.size)}
+                      {formatFileSize(doc.size ?? doc.file_size ?? 0)}
                     </td>
                     <td className="px-4 py-3 text-sm text-[var(--color-text-muted)]">
                       {doc.chunk_count}
@@ -445,7 +447,7 @@ export default function DocumentsPage() {
         }
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
-          确定要删除文档「{deleteTarget?.filename}」吗？此操作不可撤销。
+          确定要删除文档「{deleteTarget?.filename || deleteTarget?.title}」吗？此操作不可撤销。
         </p>
       </Modal>
     </div>

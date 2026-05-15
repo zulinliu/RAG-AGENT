@@ -112,6 +112,17 @@ class SessionManager:
             )
         return message_id
 
+    async def set_conversation_title(self, conversation_id: str, title: str) -> None:
+        """Set a compact conversation title."""
+        compact = title.strip().replace("\n", " ")[:80] or "新对话"
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE conversations SET title = $1, updated_at = $2 WHERE id = $3",
+                compact,
+                datetime.now(timezone.utc),
+                conversation_id,
+            )
+
     async def get_history(
         self,
         conversation_id: str,
@@ -137,6 +148,7 @@ class SessionManager:
             )
         return [
             {
+                "id": str(r["id"]),
                 "message_id": str(r["id"]),
                 "role": r["role"],
                 "content": r["content"],
@@ -224,7 +236,7 @@ class SessionManager:
             if project_id:
                 rows = await conn.fetch(
                     """
-                    SELECT id, project_id, created_at, updated_at
+                    SELECT id, project_id, title, created_at, updated_at
                     FROM conversations
                     WHERE user_id = $1 AND project_id = $2
                     ORDER BY updated_at DESC
@@ -237,7 +249,7 @@ class SessionManager:
             else:
                 rows = await conn.fetch(
                     """
-                    SELECT id, project_id, created_at, updated_at
+                    SELECT id, project_id, title, created_at, updated_at
                     FROM conversations
                     WHERE user_id = $1
                     ORDER BY updated_at DESC
@@ -248,7 +260,9 @@ class SessionManager:
                 )
         return [
             {
+                "id": str(r["id"]),
                 "conversation_id": str(r["id"]),
+                "title": r["title"] or "新对话",
                 "project_id": r["project_id"],
                 "created_at": r["created_at"].isoformat(),
                 "updated_at": r["updated_at"].isoformat(),
@@ -260,13 +274,15 @@ class SessionManager:
         """获取对话基本信息（含 user_id）。"""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, user_id, project_id, created_at, updated_at FROM conversations WHERE id = $1",
+                "SELECT id, user_id, project_id, title, created_at, updated_at FROM conversations WHERE id = $1",
                 conversation_id,
             )
         if row is None:
             return None
         return {
             "conversation_id": str(row["id"]),
+            "id": str(row["id"]),
+            "title": row["title"] or "新对话",
             "user_id": str(row["user_id"]),
             "project_id": row["project_id"],
             "created_at": row["created_at"].isoformat(),
@@ -315,3 +331,53 @@ class SessionManager:
                 message_id,
             )
         logger.info("feedback '%s' recorded for message %s", feedback, message_id)
+
+    async def create_feedback_bad_case(self, message_id: str, user_id: str) -> None:
+        """Create one open BadCase for a thumbs-down feedback event."""
+        bad_case_id = str(uuid.uuid4())
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO bad_cases (
+                        id, project_id, message_id, created_by, category,
+                        description, expected_answer, status, created_at, updated_at
+                    )
+                    SELECT $1, c.project_id, m.id, $2, 'feedback',
+                           '用户点踩该回答', NULL, 'open', $4, $4
+                    FROM messages m
+                    JOIN conversations c ON c.id = m.conversation_id
+                    WHERE m.id = $3
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM bad_cases b
+                          WHERE b.message_id = m.id
+                            AND b.category = 'feedback'
+                            AND b.status = 'open'
+                      )
+                    """,
+                    bad_case_id,
+                    user_id,
+                    message_id,
+                    datetime.now(timezone.utc),
+                )
+        except Exception:
+            logger.debug("failed to create feedback bad case", exc_info=True)
+
+    async def resolve_feedback_bad_case(self, message_id: str) -> None:
+        """Resolve open feedback BadCases when the user marks the answer useful."""
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE bad_cases
+                    SET status = 'resolved', resolved_at = $2, updated_at = $2
+                    WHERE message_id = $1
+                      AND category = 'feedback'
+                      AND status = 'open'
+                    """,
+                    message_id,
+                    datetime.now(timezone.utc),
+                )
+        except Exception:
+            logger.debug("failed to resolve feedback bad case", exc_info=True)

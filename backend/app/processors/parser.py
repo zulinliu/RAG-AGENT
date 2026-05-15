@@ -91,5 +91,14 @@ def _guess_mime(file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 from .image_parser import ImageParser  # noqa: E402
+from .office_parser import ExcelParser, PPTParser, WordParser  # noqa: E402
+from .pdf_parser import PDFParser  # noqa: E402
+from .text_parser import MarkdownParser, PlainTextParser  # noqa: E402
 
 register_parser(ImageParser())
+register_parser(MarkdownParser())
+register_parser(PlainTextParser())
+register_parser(PDFParser())
+register_parser(WordParser())
+register_parser(ExcelParser())
+register_parser(PPTParser())

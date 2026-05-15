@@ -36,8 +36,9 @@ class BaseMixin:
 
     def to_dict(self) -> dict:
         result = {}
-        for column in self.__table__.columns:
-            value = getattr(self, column.name)
+        for attr in self.__mapper__.column_attrs:
+            column = attr.columns[0]
+            value = getattr(self, attr.key)
             if isinstance(value, datetime):
                 value = value.isoformat()
             elif isinstance(value, uuid.UUID):

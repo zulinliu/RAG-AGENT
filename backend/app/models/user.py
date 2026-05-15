@@ -90,8 +90,8 @@ class UserProject(Base, BaseMixin):
     role: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
-        default="user",
-        comment="project_admin / knowledge_admin / user / readonly",
+        default="project_member",
+        comment="project_admin / knowledge_admin / project_member / viewer",
     )
 
     # relationships

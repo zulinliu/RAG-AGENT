@@ -1,4 +1,4 @@
-"""NAS 连接器，支持 NFS 和 SMB 协议。"""
+"""NAS 连接器，支持 NFS、SMB 和 WebDAV 协议。"""
 
 import logging
 import os
@@ -22,7 +22,7 @@ DEFAULT_EXCLUDED_DIRS = {
 class NASConnector(BaseConnector):
     """NAS 连接器。
 
-    支持 NFS（直接文件系统操作）和 SMB（使用 pysmb 库）两种模式。
+    支持 NFS（直接文件系统操作）、SMB（使用 pysmb 库）和 WebDAV 三种模式。
     """
 
     def __init__(
@@ -56,6 +56,8 @@ class NASConnector(BaseConnector):
             self._connect_nfs()
         elif self.protocol == "smb":
             self._connect_smb()
+        elif self.protocol == "webdav":
+            self._connect_webdav()
         else:
             raise ValueError(f"不支持的协议: {self.protocol}")
 
@@ -75,6 +77,8 @@ class NASConnector(BaseConnector):
             return self._list_nfs()
         elif self.protocol == "smb":
             return self._list_smb()
+        elif self.protocol == "webdav":
+            return self._list_webdav()
         return []
 
     def download_file(self, file_path: str, local_dir: str) -> str:
@@ -83,6 +87,8 @@ class NASConnector(BaseConnector):
             return self._download_nfs(file_path, local_dir)
         elif self.protocol == "smb":
             return self._download_smb(file_path, local_dir)
+        elif self.protocol == "webdav":
+            return self._download_webdav(file_path, local_dir)
         raise ValueError(f"不支持的协议: {self.protocol}")
 
     def get_file_metadata(self, file_path: str) -> FileMetadata:
@@ -91,6 +97,8 @@ class NASConnector(BaseConnector):
             return self._metadata_nfs(file_path)
         elif self.protocol == "smb":
             return self._metadata_smb(file_path)
+        elif self.protocol == "webdav":
+            return self._metadata_webdav(file_path)
         raise ValueError(f"不支持的协议: {self.protocol}")
 
     # ------------------------------------------------------------------
@@ -221,6 +229,122 @@ class NASConnector(BaseConnector):
                 attrs.last_write_time if hasattr(attrs, "last_write_time") else 0
             ),
         )
+
+    # ------------------------------------------------------------------
+    # WebDAV 实现
+    # ------------------------------------------------------------------
+
+    def _connect_webdav(self) -> None:
+        """WebDAV 模式：验证根目录可访问。"""
+        import requests
+
+        if not self.host:
+            raise ValueError("WebDAV 模式需要指定 host")
+        resp = requests.request(
+            "PROPFIND",
+            self._webdav_url(self.remote_path),
+            headers={"Depth": "0"},
+            auth=(self.username or "", self.password or "") if self.username else None,
+            timeout=30,
+        )
+        if resp.status_code not in (200, 207):
+            raise ConnectionError(f"WebDAV 连接失败: HTTP {resp.status_code}")
+        logger.info("WebDAV 连接成功: %s", self.host)
+
+    def _list_webdav(self) -> List[FileMetadata]:
+        """WebDAV 模式：递归列出文件。"""
+        result: List[FileMetadata] = []
+        self._walk_webdav(self.remote_path, result)
+        return result
+
+    def _walk_webdav(self, path: str, result: List[FileMetadata]) -> None:
+        import email.utils
+        import xml.etree.ElementTree as ET
+
+        import requests
+
+        resp = requests.request(
+            "PROPFIND",
+            self._webdav_url(path),
+            headers={"Depth": "1"},
+            auth=(self.username or "", self.password or "") if self.username else None,
+            timeout=30,
+        )
+        resp.raise_for_status()
+
+        ns = {"d": "DAV:"}
+        root = ET.fromstring(resp.content)
+        base_path = path.rstrip("/") or "/"
+        for response in root.findall("d:response", ns):
+            href = response.findtext("d:href", default="", namespaces=ns)
+            if not href:
+                continue
+            item_path = self._path_from_href(href)
+            if item_path.rstrip("/") == base_path.rstrip("/"):
+                continue
+
+            prop = response.find("d:propstat/d:prop", ns)
+            if prop is None:
+                continue
+            is_collection = prop.find("d:resourcetype/d:collection", ns) is not None
+            name = Path(item_path.rstrip("/")).name
+            if is_collection:
+                if name not in self.excluded_dirs:
+                    self._walk_webdav(item_path, result)
+                continue
+
+            if not self._is_allowed(name):
+                continue
+            modified_raw = prop.findtext("d:getlastmodified", default="", namespaces=ns)
+            modified = datetime.fromtimestamp(0)
+            if modified_raw:
+                try:
+                    modified = email.utils.parsedate_to_datetime(modified_raw).replace(tzinfo=None)
+                except Exception:
+                    pass
+            size = int(prop.findtext("d:getcontentlength", default="0", namespaces=ns) or 0)
+            result.append(FileMetadata(
+                file_path=item_path,
+                file_size=size,
+                mime_type=self._guess_mime(item_path),
+                modified_at=modified,
+            ))
+
+    def _download_webdav(self, file_path: str, local_dir: str) -> str:
+        import requests
+
+        dst_dir = Path(local_dir)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst_path = dst_dir / Path(file_path).name
+        resp = requests.get(
+            self._webdav_url(file_path),
+            auth=(self.username or "", self.password or "") if self.username else None,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        dst_path.write_bytes(resp.content)
+        return str(dst_path)
+
+    def _metadata_webdav(self, file_path: str) -> FileMetadata:
+        matches: List[FileMetadata] = []
+        self._walk_webdav(str(Path(file_path).parent), matches)
+        for item in matches:
+            if item.file_path.rstrip("/") == file_path.rstrip("/"):
+                return item
+        raise FileNotFoundError(file_path)
+
+    def _webdav_url(self, path: str) -> str:
+        base = (self.host or "").rstrip("/")
+        if not base.startswith(("http://", "https://")):
+            base = f"https://{base}"
+        return f"{base}/{path.lstrip('/')}"
+
+    @staticmethod
+    def _path_from_href(href: str) -> str:
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(href)
+        return unquote(parsed.path or href)
 
     # ------------------------------------------------------------------
     # 通用辅助

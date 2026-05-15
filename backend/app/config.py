@@ -41,7 +41,8 @@ class MilvusConfig(BaseSettings):
     port: int = 19530
     user: str = ""
     password: str = ""
-    collection_prefix: str = "rag_agent"
+    collection_name: str = "rag_chunks"
+    collection_prefix: str = "rag"
 
 
 class ElasticsearchConfig(BaseSettings):
@@ -52,7 +53,13 @@ class ElasticsearchConfig(BaseSettings):
     hosts: str = "http://localhost:9200"
     user: str = "elastic"
     password: str = "changeme"
-    index_prefix: str = "rag_agent"
+    index_name: str = "rag_chunks"
+    index_prefix: str = "rag"
+
+    @property
+    def host_list(self) -> list[str]:
+        """Return ES hosts as a list, accepting comma-separated env values."""
+        return [host.strip() for host in self.hosts.split(",") if host.strip()]
 
 
 class RedisConfig(BaseSettings):
@@ -96,7 +103,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "siliconflow": {"api_base": "https://api.siliconflow.cn/v1"},
     "ollama": {"api_base": "http://localhost:11434/v1"},
     "openai": {"api_base": "https://api.openai.com/v1"},
-    "local": {"api_base": "http://localhost:8000/v1"},
+    "local": {"api_base": "http://localhost:8001/v1"},
     # Embedding / Reranker providers (same endpoints, different usage)
     "tei": {"api_base": "http://embedding-worker:80"},
     "tei-rerank": {"api_base": "http://reranker-worker:80"},
@@ -105,6 +112,8 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
 
 def _resolve_api_base(provider: str, api_base: str) -> str:
     """Return *api_base*, applying provider defaults when the value is unset."""
+    if api_base:
+        return api_base
     provider_defaults = PROVIDER_DEFAULTS.get(provider)
     if provider_defaults and "api_base" in provider_defaults:
         return provider_defaults["api_base"]

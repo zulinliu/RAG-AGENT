@@ -80,7 +80,7 @@
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
 | Celery | 5.6.x | Async task execution | Battle-tested, Redis broker, retry logic, monitoring. Latest: 5.6.3. Confirmed: HIGH confidence (PyPI verified) |
-| Redis Streams | (via Redis 7.x) | Message queue for doc sync | Lightweight, already using Redis, good for ordered task processing |
+| Redis Broker | Redis 7.x | Celery broker/cache | Lightweight broker for Celery task dispatch, retry, and scheduling support |
 ### Data Source Connectors
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|

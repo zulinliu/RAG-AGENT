@@ -107,6 +107,9 @@ DB_PASSWORD=your-secure-password
 
 # Redis密码
 REDIS_PASSWORD=your-redis-password
+
+# 初始化管理员密码（scripts/init-db.sh 必需）
+ADMIN_PASSWORD=your-admin-password
 ```
 
 ### 3. 一键启动（Docker Compose）
@@ -170,7 +173,7 @@ npm run dev
 
 - 前端界面：http://localhost:3000
 - 后端API文档：http://localhost:8000/docs
-- 默认管理员：admin / admin123
+- 管理员账号由 `.env` 中的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 创建；使用 `.env.example` 默认值时为 `admin / admin123`。
 
 ### 7. LLM / Embedding / Reranker 模型配置
 
@@ -210,6 +213,7 @@ python -m vllm.entrypoints.openai.api_server \
 
 ```env
 LLM_PROVIDER=local
+LLM_API_BASE=http://host.docker.internal:8001/v1  # Docker Compose 内访问宿主机 vLLM
 LLM_MODEL_NAME=Qwen2.5-72B-Instruct
 ```
 
@@ -337,9 +341,10 @@ MINIO_SECRET_KEY=minioadmin         # 生产环境必须更换！
 MINIO_BUCKET=rag-docs
 
 # ==================== LLM ====================
-# provider 自动填充 API_BASE，无需手动设置
+# 已知 provider 会自动填充 API_BASE；Docker Compose 本地 vLLM 默认使用 host.docker.internal:8001
 LLM_PROVIDER=local                  # local/zhipu/deepseek/minimax/siliconflow/ollama/openai/custom
 LLM_API_KEY=                        # 第三方API密钥（本地部署无需）
+LLM_API_BASE=                       # custom 或特殊网络拓扑时手动设置
 LLM_MODEL_NAME=Qwen2.5-72B-Instruct
 LLM_MAX_TOKENS=4096
 LLM_TEMPERATURE=0.1
@@ -379,6 +384,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 - 使用 `ik_max_word` 分词器（中文最佳实践）
 - 1主分片 + 1副本
 - 包含15个字段（project_id、content、title、author等）
+- 若部署环境未安装 IK 插件，初始化脚本和运行时索引创建会自动回退到 standard analyzer，保证系统可启动；生产环境仍建议安装 IK 以提升中文 BM25 效果。
 
 ### Milvus Collection 配置
 
@@ -395,9 +401,9 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 2. 点击**创建项目**，填写项目名称和描述
 3. 进入项目详情，添加数据源：
    - **本地文件**：指定服务器上的目录路径，系统自动监控文件变更
-   - **钉钉知识库**：填入企业CorpId和AppKey（API模式）或配置CLI模式
-   - **Seafile**：填入服务器地址、Token、资料库ID
-   - **NAS**：选择协议（NFS/SMB/WebDAV），填入地址和认证信息
+   - **钉钉知识库**：API模式填入 AppKey、AppSecret、知识库空间 ID；也可配置 CLI 模式
+   - **Seafile**：填入服务器地址、Access Token、资料库ID
+   - **NAS**：选择协议（NFS/SMB/WebDAV），填入地址、远程路径和认证信息
 4. 点击**测试连接**确认连通性
 5. 点击**开始同步**，系统自动下载、解析、分块、索引文档
 
@@ -452,6 +458,7 @@ RAG-AGENT/
 │   ├── milvus/                 # Milvus Collection初始化
 │   ├── redis/                  # Redis配置
 │   └── postgresql.conf         # PostgreSQL优化配置
+├── docs/                       # 架构设计与评审整改记录
 ├── scripts/                    # 初始化脚本
 ├── docker-compose.yml          # 开发环境编排
 ├── docker-compose.prod.yml     # 生产环境覆盖
@@ -465,7 +472,7 @@ RAG-AGENT/
 - **生产环境必须更换** `.env` 中的所有密码和密钥
 - AUTH_SECRET_KEY 建议使用 `openssl rand -hex 32` 生成
 - 系统默认关闭Elasticsearch安全模块（xpack.security.enabled=false），内网部署时可接受
-- 所有API接口需要JWT Token认证（除 `/health` 和 `/auth/login`）
+- 所有API接口需要JWT Token认证（除 `/health`、`/api/v1/health` 和 `/api/v1/auth/login`）
 - 数据按项目隔离，用户只能访问有权限的项目数据
 
 ### 性能
@@ -500,7 +507,7 @@ RAG-AGENT/
 | 图片OCR | PaddleOCR深度集成，支持图片文字提取 |
 | 钉钉机器人 | 在钉钉群内直接问答，无需打开Web |
 | RAGAS评估管道 | 自动化Faithfulness/Relevancy评估 |
-| BadCase管理 | 收集→分类→分析→优化→验证闭环 |
+| BadCase管理增强 | 当前已有基础落库与解决状态，后续补齐前端管理、归因和优化验证闭环 |
 | Grafana监控 | 准确率、满意度、延迟等核心指标仪表盘 |
 | 知识图谱增强 | GraphRAG跨文档关联查询 |
 | Agentic搜索 | Agent自主分解复杂问题，多步检索 |
@@ -520,6 +527,8 @@ RAG-AGENT/
 ## 技术支持
 
 - 项目方案文档：`企业多源项目知识问答Agent_项目方案.md`
+- 架构设计说明：`docs/ARCHITECTURE.md`
+- 评审整改记录：`docs/REVIEW_REMEDIATION.md`
 - API文档：启动后端后访问 `http://localhost:8000/docs`
 - 项目规划：`.planning/` 目录下的 ROADMAP.md 和 REQUIREMENTS.md
 

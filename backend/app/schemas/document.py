@@ -20,8 +20,11 @@ class DocumentResponse(BaseModel):
     project_id: uuid.UUID
     data_source_id: uuid.UUID | None = None
     title: str
+    filename: str | None = None
     file_path: str | None = None
     file_type: str
+    file_size: int | None = None
+    size: int | None = None
     content_hash: str | None = None
     status: str
     chunk_count: int = 0

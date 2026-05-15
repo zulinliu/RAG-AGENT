@@ -18,6 +18,7 @@
 |------|------|--------|---------|
 | V1.0 | 2026-05-13 | AI助手 | 初始版本，完成完整方案设计 |
 | V1.1 | 2026-05-13 | AI助手 | 补充钉钉CLI方案、代码/文档生成功能规划 |
+| V1.2 | 2026-05-15 | AI助手 | 根据实现评审校准架构说明：同步队列、索引命名、健康检查、BadCase基础闭环 |
 
 ---
 
@@ -215,11 +216,11 @@
 | 向量数据库 | Milvus 2.6 | Qdrant, pgvector | 高性能分布式，混合检索支持好 |
 | 全文检索 | Elasticsearch 8.x | OpenSearch | BM25中文分词成熟，生态完善 |
 | 关系数据库 | PostgreSQL 16 | MySQL | JSON支持好，pgvector可复用 |
-| 消息队列 | Redis Streams | RabbitMQ, Kafka | 轻量级，适合文档同步任务队列 |
+| 消息队列 | Celery + Redis Broker | RabbitMQ, Kafka | 轻量级，支持任务重试、定时调度和 Worker 横向扩展 |
 | 缓存 | Redis 7.x | Memcached | 支持多种数据结构，功能丰富 |
 | 文档解析 | MinerU + Unstructured | Doc2X, LlamaParse | 中文PDF解析效果好，开源免费 |
 | OCR引擎 | PaddleOCR | Tesseract | 中文识别准确率高 |
-| 任务调度 | APScheduler / Celery | Airflow | 轻量级，与Python生态集成好 |
+| 任务调度 | Celery Beat | Airflow, APScheduler | 与 Celery Worker 共享任务模型，便于同步任务统一调度 |
 | 容器化 | Docker + Docker Compose | K8s | 初期部署简单，后续可迁移至K8s |
 | 监控 | Prometheus + Grafana | Zabbix | 云原生标准，指标丰富 |
 | 钉钉CLI | dingtalk-workspace-cli | 浏览器自动化 | 官方开源CLI工具，支持无API权限场景 |
@@ -381,7 +382,7 @@
 | 关系数据库 | 用户、项目、配置、会话、日志 | PostgreSQL 16 | GB级 |
 | 对象存储 | 原始文档文件、解析结果缓存 | MinIO | TB级 |
 | 缓存 | 热点查询结果、Embedding缓存 | Redis 7.x | GB级 |
-| 消息队列 | 文档同步任务、异步处理任务 | Redis Streams | 万级/天 |
+| 消息队列 | 文档同步任务、异步处理任务 | Celery + Redis | 万级/天 |
 
 #### 4.2.2 统一元数据Schema
 
@@ -459,7 +460,7 @@
 - **增量轮询**：每15分钟轮询各数据源的变更（基于modifiedTime/mtime）
 - **事件监听**：NAS和本地文件通过watchdog实时监听变更事件
 
-同步任务通过Redis Streams消息队列异步执行，支持并发控制和失败重试。
+同步任务通过 Celery + Redis 异步执行，支持并发控制、失败重试、定时同步和 Worker 横向扩展。
 
 #### 5.1.2 各数据源同步策略
 
@@ -677,7 +678,7 @@ System Prompt是控制答案质量和防止幻觉的关键。核心设计原则�
 | Seafile Connector开发（认证、资料库遍历、文件下载） | 3 | P0 | seafile_connector.py |
 | NAS Connector开发（SMB/NFS/WebDAV三协议支持） | 4 | P0 | nas_connector.py |
 | 本地文件Connector开发（watchdog监听） | 2 | P0 | local_connector.py |
-| 同步任务调度框架（Celery + Redis Streams） | 3 | P0 | sync_scheduler.py |
+| 同步任务调度框架（Celery + Redis） | 3 | P0 | sync_scheduler.py |
 | 增量同步逻辑（变更检测、去重） | 3 | Connectors | sync_engine.py |
 | 同步状态监控和异常告警 | 2 | 同步框架 | sync_monitor.py |
 | 数据源管理API（CRUD、连接测试） | 2 | P0 | API端点 |

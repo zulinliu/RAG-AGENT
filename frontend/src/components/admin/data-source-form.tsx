@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState } from "react";
-import { Database, Plug, Loader2 } from "lucide-react";
+import { Database, Plug } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Input, Textarea, Select } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { useToast } from "@/components/ui/toast";
 
@@ -48,14 +48,15 @@ const fieldConfigs: Record<DataSourceType, FieldConfig[]> = {
   ],
   seafile: [
     { key: "server_url", label: "服务器地址", type: "url", placeholder: "https://seafile.example.com", required: true },
-    { key: "api_token", label: "API Token", type: "password", placeholder: "Seafile API Token", required: true },
+    { key: "access_token", label: "API Token", type: "password", placeholder: "Seafile API Token", required: true },
     { key: "repo_id", label: "资料库 ID", type: "text", placeholder: "资料库 ID", required: true },
   ],
   nas: [
+    { key: "protocol", label: "协议", type: "text", placeholder: "nfs / smb / webdav", required: true },
     { key: "host", label: "NAS 地址", type: "url", placeholder: "https://nas.example.com:5000", required: true },
     { key: "username", label: "用户名", type: "text", placeholder: "NAS 登录用户名", required: true },
     { key: "password", label: "密码", type: "password", placeholder: "NAS 登录密码", required: true },
-    { key: "share_path", label: "共享路径", type: "text", placeholder: "/share/documents", required: true },
+    { key: "remote_path", label: "共享路径", type: "text", placeholder: "/share/documents", required: true },
   ],
 };
 
@@ -87,8 +88,7 @@ export function DataSourceForm({
   const handleTest = async () => {
     setTesting(true);
     try {
-      // TODO: 后端需提供 POST /api/v1/datasources/test-connection 端点
-      // 该端点应接收 { type, config } 参数并返回 { success: boolean, message?: string }
+      // 该端点接收 { source_type, config } 并返回 { success, message }
       addToast("info", "连接测试中...");
       // Validate required fields before testing
       const requiredFields = fields.filter((f) => f.required);
@@ -98,11 +98,18 @@ export function DataSourceForm({
           return;
         }
       }
-      await api.post("/datasources/test-connection", {
-        type: formData.type,
-        config: formData.config,
-      });
-      addToast("success", "连接测试成功");
+      const result = await api.post<{ success: boolean; message: string }>(
+        "/datasources/test-connection",
+        {
+          source_type: formData.type,
+          config: formData.config,
+        }
+      );
+      if (result.success) {
+        addToast("success", "连接测试成功");
+      } else {
+        addToast("warning", result.message || "连接测试未通过");
+      }
     } catch (err) {
       addToast(
         "error",
@@ -135,7 +142,7 @@ export function DataSourceForm({
     try {
       await api.post(`/projects/${formData.project_id}/datasources`, {
         name: formData.name,
-        type: formData.type,
+        source_type: formData.type,
         config: formData.config,
       });
       addToast("success", "数据源已创建");

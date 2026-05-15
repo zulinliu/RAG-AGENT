@@ -240,7 +240,7 @@ class CRAGPipeline:
                     result = await self._llm_client.generate(
                         prompt, temperature=0.0, max_tokens=8
                     )
-                    if "RELEVANT" in result.upper():
+                    if result.strip().upper().startswith("RELEVANT"):
                         return doc
                 except Exception:
                     logger.exception("grading doc %s failed", doc.chunk_id)
@@ -376,6 +376,8 @@ class CRAGPipeline:
             "conversation_history": conversation_history or [],
         }
         result = await self._graph.ainvoke(initial_state)
+        if isinstance(result, dict):
+            return QueryState(**result)
         return result
 
     async def run_pre_generate(

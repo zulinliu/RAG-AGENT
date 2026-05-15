@@ -52,14 +52,15 @@ logger = logging.getLogger("init-db")
 async def create_admin():
     # Import here so Alembic migrations have already run
     from sqlalchemy import select
-    from app.models.database import get_session, init_engine
+    from app.database import async_session_factory
     from app.models.user import User
-    from app.utils.security import hash_password
+    from app.utils.auth import get_password_hash
 
     email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
+    username = os.environ.get("ADMIN_USERNAME", "admin")
     password = os.environ["ADMIN_PASSWORD"]
 
-    async for session in get_session():
+    async with async_session_factory() as session:
         result = await session.execute(select(User).where(User.email == email))
         existing = result.scalar_one_or_none()
         if existing:
@@ -67,10 +68,11 @@ async def create_admin():
             return
 
         user = User(
+            username=username,
             email=email,
-            hashed_password=hash_password(password),
-            full_name="System Admin",
-            role="admin",
+            password_hash=get_password_hash(password),
+            display_name="System Admin",
+            role="system_admin",
             is_active=True,
         )
         session.add(user)

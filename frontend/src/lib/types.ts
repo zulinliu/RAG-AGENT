@@ -22,10 +22,10 @@ export interface ChatMessageData {
 export interface DataSource {
   id: string;
   name: string;
-  type: string;
+  source_type: string;
   project_id: string;
   config: Record<string, string>;
-  status: string;
+  sync_status: string;
   last_synced_at?: string;
   created_at: string;
 }
