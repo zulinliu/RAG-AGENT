@@ -30,12 +30,12 @@ class ProjectMemberCreate(BaseModel):
     """Request body for ``POST /api/v1/projects/{id}/members``."""
 
     user_id: uuid.UUID
-    role: str = Field(default="user")
+    role: str = Field(default="project_member")
 
     @field_validator("role")
     @classmethod
     def validate_role(cls, v: str) -> str:
-        allowed = {"project_admin", "knowledge_admin", "user", "readonly"}
+        allowed = {"project_admin", "knowledge_admin", "project_member", "viewer"}
         if v not in allowed:
             raise ValueError(f"Project role must be one of {allowed}")
         return v

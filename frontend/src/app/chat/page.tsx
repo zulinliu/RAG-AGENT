@@ -365,7 +365,7 @@ export default function ChatPage() {
                       <div className="flex gap-1">
                         <span className="h-2 w-2 animate-bounce rounded-full bg-[var(--color-primary)]" />
                         <span
-                          className="h-2 w-2 animate-bounce rounded-full bg-[var(--color-primary)"
+                          className="h-2 w-2 animate-bounce rounded-full bg-[var(--color-primary)]"
                           style={{ animationDelay: "0.1s" }}
                         />
                         <span

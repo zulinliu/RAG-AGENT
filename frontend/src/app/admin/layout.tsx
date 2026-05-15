@@ -1,8 +1,9 @@
 "use client";
 
-import React from "react";
+import React, { useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useAppStore } from "@/lib/store";
 import {
   FolderOpen,
   Database,
@@ -50,8 +51,17 @@ export default function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const { user } = useAppStore();
   const pathname = usePathname();
   const router = useRouter();
+
+  useEffect(() => {
+    if (user && !["system_admin", "project_admin", "knowledge_admin"].includes(user.role)) {
+      router.replace("/chat");
+    }
+  }, [user, router]);
+
+  if (!user) return null;
 
   return (
     <div className="flex h-screen">

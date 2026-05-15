@@ -149,7 +149,7 @@ class CRAGPipeline:
             "如果查询是问候、闲聊或无需外部知识即可回答，输出 NO。\n"
             "如果查询涉及项目事实、数据、流程等，输出 YES。\n"
             "只输出 YES 或 NO。\n\n"
-            f"查询: {state.query}"
+            "<query>\n" + state.query + "\n</query>"
         )
         try:
             result = await self._llm_client.generate(prompt, temperature=0.0, max_tokens=16)
@@ -232,8 +232,8 @@ class CRAGPipeline:
             prompt = (
                 "判断以下文档片段是否与用户查询相关。\n"
                 "只输出 RELEVANT 或 IRRELEVANT。\n\n"
-                f"用户查询: {query_text}\n\n"
-                f"文档片段: {content}"
+                "<query>\n" + query_text + "\n</query>\n\n"
+                "<document>\n" + content + "\n</document>"
             )
             async with semaphore:
                 try:
@@ -282,8 +282,8 @@ class CRAGPipeline:
             "1. 使用同义词\n"
             "2. 拆分为更具体的子问题\n"
             "3. 仅输出改写后的查询\n\n"
-            f"原始查询: {state.query}\n"
-            f"当前改写: {state.rewritten_query}"
+            "<original_query>\n" + state.query + "\n</original_query>\n"
+            "<current_rewrite>\n" + (state.rewritten_query or "（无）") + "\n</current_rewrite>"
         )
         try:
             rewritten = await self._llm_client.generate(
@@ -334,17 +334,25 @@ class CRAGPipeline:
     # ------------------------------------------------------------------
 
     async def _verify(self, state: QueryState) -> dict:
-        """引用验证 + 置信度评分。"""
+        """引用验证 + 事实验证 + 置信度评分。"""
         docs = state.reranked_docs
 
         verification = self._citation_verifier.verify(state.answer, docs)
+
+        # 事实验证（检查引用内容是否真实存在于文档中）
+        grounding = self._citation_verifier.verify_claim_grounding(state.answer, docs)
 
         retrieval_scores = [d.score for d in docs]
         confidence = self._confidence_scorer.score(
             retrieval_scores=retrieval_scores,
             citation_coverage=verification.citation_coverage,
             answer_length=len(state.answer),
+            grounding_rate=grounding.get("grounding_rate", 0.0),
         )
+
+        # 如果事实验证发现未落地的引用，降低置信度
+        if grounding.get("ungrounded_citations"):
+            confidence = min(confidence, 0.7)
 
         return {
             "citations": verification.valid_citations,

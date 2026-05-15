@@ -438,7 +438,7 @@ export default function DocumentsPage() {
             >
               取消
             </Button>
-            <Button onClick={confirmDelete}>
+            <Button onClick={confirmDelete} className="bg-red-600 hover:bg-red-700 text-white">
               确认删除
             </Button>
           </>

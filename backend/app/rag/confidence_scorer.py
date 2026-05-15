@@ -7,9 +7,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 # 权重配置
-WEIGHT_RETRIEVAL = 0.4
-WEIGHT_CITATION = 0.3
-WEIGHT_ANSWER = 0.3
+WEIGHT_RETRIEVAL = 0.35
+WEIGHT_CITATION = 0.20
+WEIGHT_GROUNDING = 0.25
+WEIGHT_ANSWER = 0.20
 
 # 低置信度阈值
 LOW_CONFIDENCE_THRESHOLD = 0.6
@@ -23,6 +24,7 @@ class ConfidenceScorer:
         retrieval_scores: list[float],
         citation_coverage: float,
         answer_length: int,
+        grounding_rate: float = 1.0,
     ) -> float:
         """计算综合置信度分数 (0-1)。
 
@@ -30,6 +32,7 @@ class ConfidenceScorer:
             retrieval_scores: 检索文档的相关性分数列表。
             citation_coverage: 引用覆盖率 (0-1)。
             answer_length: 答案文本长度（字符数），保留参数以兼容调用方，不再参与评分。
+            grounding_rate: 引用事实验证落地率 (0-1)，默认 1.0 表示全部落地。
 
         Returns:
             置信度分数 (0-1)。
@@ -44,30 +47,33 @@ class ConfidenceScorer:
         # 2. 引用覆盖: 直接使用
         citation_score = min(citation_coverage, 1.0)
 
-        # 3. 答案合理性: 基于引用覆盖率而非答案长度
-        #    有引用且覆盖率 > 0.5 -> 高分；无引用 -> 降分
-        if citation_coverage > 0.5:
-            answer_reasonableness = 0.7 + 0.3 * citation_coverage  # 0.85 ~ 1.0
-        elif citation_coverage > 0:
-            answer_reasonableness = 0.4 + 0.6 * citation_coverage  # 0.4 ~ 0.7
+        # 3. 事实验证落地率
+        grounding_score = min(grounding_rate, 1.0)
+
+        # 4. 答案合理性: 基于长度区间独立评估，不再依赖引用覆盖率
+        if answer_length < 10:
+            answer_reasonableness = 0.1
+        elif answer_length < 50:
+            answer_reasonableness = 0.4
         else:
-            # 无引用的答案，降低评分
-            answer_reasonableness = 0.2
+            answer_reasonableness = 0.7
 
         # 加权综合
         confidence = (
             WEIGHT_RETRIEVAL * retrieval_quality
             + WEIGHT_CITATION * citation_score
+            + WEIGHT_GROUNDING * grounding_score
             + WEIGHT_ANSWER * answer_reasonableness
         )
         confidence = round(max(0.0, min(1.0, confidence)), 4)
 
         if confidence < LOW_CONFIDENCE_THRESHOLD:
             logger.warning(
-                "low confidence answer: %.2f (retrieval=%.2f, citation=%.2f, answer=%.2f)",
+                "low confidence answer: %.2f (retrieval=%.2f, citation=%.2f, grounding=%.2f, answer=%.2f)",
                 confidence,
                 retrieval_quality,
                 citation_score,
+                grounding_score,
                 answer_reasonableness,
             )
         else:

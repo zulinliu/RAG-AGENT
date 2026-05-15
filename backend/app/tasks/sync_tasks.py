@@ -3,11 +3,25 @@
 import logging
 import uuid
 from dataclasses import asdict
+from datetime import datetime as _dt
 from typing import Any, Dict, List, Optional
 
 from .celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+_pipeline: Optional[Any] = None
+
+
+def _get_pipeline() -> Any:
+    """Get or create a cached DocumentPipeline instance per worker process."""
+    global _pipeline
+    if _pipeline is None:
+        from app.processors.pipeline import DocumentPipeline
+        from app.config import get_settings
+
+        _pipeline = DocumentPipeline.from_settings(get_settings())
+    return _pipeline
 
 
 @celery_app.task(
@@ -38,6 +52,10 @@ def sync_document_task(
     logger.info("开始同步文档: %s (project=%s)", sync_task_data["file_path"], sync_task_data["project_id"])
 
     try:
+        modified = sync_task_data["modified_at"]
+        if isinstance(modified, str):
+            modified = _dt.fromisoformat(modified)
+
         task = SyncTask(
             source=sync_task_data["source"],
             file_path=sync_task_data["file_path"],
@@ -45,12 +63,12 @@ def sync_document_task(
             data_source_id=sync_task_data["data_source_id"],
             file_size=sync_task_data["file_size"],
             mime_type=sync_task_data["mime_type"],
-            modified_at=sync_task_data["modified_at"],
+            modified_at=modified,
             checksum=sync_task_data.get("checksum"),
             extra=sync_task_data.get("extra", {}),
         )
 
-        pipeline = DocumentPipeline.from_settings(get_settings())
+        pipeline = _get_pipeline()
         result = pipeline.process_document(
             file_path=task.file_path,
             project_id=task.project_id,
@@ -238,49 +256,53 @@ def _get_configured_data_sources() -> List[Dict[str, Any]]:
         from sqlalchemy import create_engine, select, text
         from sqlalchemy.orm import Session
 
-        engine = create_engine(sync_url, pool_size=2, max_overflow=3)
+        engine = None
+        try:
+            engine = create_engine(sync_url, pool_size=2, max_overflow=3, pool_recycle=3600, pool_pre_ping=True)
 
-        with Session(engine) as session:
-            rows = session.execute(
-                text(
-                    """
-                    SELECT id, project_id, source_type, config, name
-                    FROM data_sources
-                    WHERE is_active = true AND sync_status = 'idle'
-                    """
-                )
-            ).fetchall()
+            with Session(engine) as session:
+                rows = session.execute(
+                    text(
+                        """
+                        SELECT id, project_id, source_type, config, name
+                        FROM data_sources
+                        WHERE is_active = true AND sync_status = 'idle'
+                        """
+                    )
+                ).fetchall()
 
-            result: List[Dict[str, Any]] = []
-            for row in rows:
-                result.append({
-                    "id": str(row.id),
-                    "project_id": str(row.project_id),
-                    "type": row.source_type,
-                    "config": row.config or {},
-                    "name": row.name,
-                    # Flatten config fields that _create_connector expects at top level
-                    "path": (row.config or {}).get("path", ""),
-                    "server_url": (row.config or {}).get("server_url", ""),
-                    "token": (row.config or {}).get("access_token", ""),
-                    "repo_id": (row.config or {}).get("repo_id", ""),
-                    "sync_dir": (row.config or {}).get("sync_dir", "/"),
-                    "allowed_extensions": (row.config or {}).get("allowed_extensions"),
-                    "protocol": (row.config or {}).get("protocol", "nfs"),
-                    "host": (row.config or {}).get("host"),
-                    "share_name": (row.config or {}).get("share_name"),
-                    "username": (row.config or {}).get("username"),
-                    "password": (row.config or {}).get("password"),
-                    "mount_point": (row.config or {}).get("mount_point"),
-                    "remote_path": (row.config or {}).get("remote_path", "/"),
-                    "mode": (row.config or {}).get("mode", "api"),
-                    "app_key": (row.config or {}).get("app_key"),
-                    "app_secret": (row.config or {}).get("app_secret"),
-                    "cli_path": (row.config or {}).get("cli_path"),
-                })
+                result: List[Dict[str, Any]] = []
+                for row in rows:
+                    result.append({
+                        "id": str(row.id),
+                        "project_id": str(row.project_id),
+                        "type": row.source_type,
+                        "config": row.config or {},
+                        "name": row.name,
+                        # Flatten config fields that _create_connector expects at top level
+                        "path": (row.config or {}).get("path", ""),
+                        "server_url": (row.config or {}).get("server_url", ""),
+                        "token": (row.config or {}).get("access_token", ""),
+                        "repo_id": (row.config or {}).get("repo_id", ""),
+                        "sync_dir": (row.config or {}).get("sync_dir", "/"),
+                        "allowed_extensions": (row.config or {}).get("allowed_extensions"),
+                        "protocol": (row.config or {}).get("protocol", "nfs"),
+                        "host": (row.config or {}).get("host"),
+                        "share_name": (row.config or {}).get("share_name"),
+                        "username": (row.config or {}).get("username"),
+                        "password": (row.config or {}).get("password"),
+                        "mount_point": (row.config or {}).get("mount_point"),
+                        "remote_path": (row.config or {}).get("remote_path", "/"),
+                        "mode": (row.config or {}).get("mode", "api"),
+                        "app_key": (row.config or {}).get("app_key"),
+                        "app_secret": (row.config or {}).get("app_secret"),
+                        "cli_path": (row.config or {}).get("cli_path"),
+                    })
 
-            engine.dispose()
-            return result
+                return result
+        finally:
+            if engine:
+                engine.dispose()
 
     except Exception as e:
         logger.error("读取数据源配置失败: %s", e)

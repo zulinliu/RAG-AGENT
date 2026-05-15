@@ -277,3 +277,15 @@ class QAService:
     async def get_message_owner(self, message_id: str) -> str | None:
         """获取消息所属对话的 user_id。"""
         return await self._session.get_message_owner(message_id)
+
+    async def delete_conversation(
+        self,
+        conversation_id: str,
+        user_id: str,
+    ) -> bool:
+        """删除对话（仅所有者可删除）。返回是否成功。"""
+        conversation = await self._session.get_conversation(conversation_id)
+        if not conversation or conversation["user_id"] != user_id:
+            return False
+        await self._session.delete_conversation(conversation_id)
+        return True

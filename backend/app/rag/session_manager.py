@@ -182,9 +182,9 @@ class SessionManager:
             f"{m['role']}: {m['content']}" for m in old_messages
         )
         prompt = (
-            "请将以下对话历史压缩为一段简洁的摘要，保留关键信息。\n"
-            "仅输出摘要内容，不要任何解释。\n\n"
-            f"{summary_text}"
+            "请将以下对话历史压缩为简洁的摘要，保留关键事实、决策和上下文信息。\n"
+            "只输出摘要文本，不要输出其他内容。\n\n"
+            "<conversation_history>\n" + summary_text + "\n</conversation_history>"
         )
         try:
             summary = await llm_client.generate(prompt, temperature=0.1, max_tokens=512)
@@ -286,6 +286,15 @@ class SessionManager:
                 message_id,
             )
         return str(row["user_id"]) if row else None
+
+    async def delete_conversation(self, conversation_id: str) -> None:
+        """删除对话及其所有消息。"""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM conversations WHERE id = $1",
+                conversation_id,
+            )
+        logger.info("deleted conversation %s", conversation_id)
 
     async def add_feedback(
         self,

@@ -155,13 +155,32 @@
 - Use MinerU as primary PDF parser, Unstructured for Office formats and chunking
 - PaddleOCR handles scanned PDFs and images
 ### 5. Milvus Hybrid Search (Sparse + Dense)
-- Dense vectors (bge-large-zh): semantic similarity
-- Sparse vectors (BM25): keyword matching
-- Both stored in Milvus, searched together with hybrid search API
-- Complex aggregation queries
-- Proven Chinese analyzer ecosystem (ik_max_word)
-- Faceted search and filtering
-- Operational familiarity
+- Dense vectors (bge-large-zh): semantic similarity via HNSW index (COSINE, M=16, efConstruction=256)
+- Sparse vectors (BM25): keyword matching via BM25BuiltInFunction + SPARSE_INVERTED_INDEX (IP metric)
+- Both stored in Milvus `rag_chunks` collection, content field enables BM25 function
+- Dual search: Milvus hybrid (dense+sparse) + Elasticsearch BM25 (ik_max_word analyzer) for maximum recall
+- Elasticsearch serves as the authoritative BM25 engine with proven Chinese analyzer ecosystem
+- Milvus BM25 serves as complementary sparse path for hybrid search API
+
+### 6. Anti-Hallucination Multi-Layer Defense
+- Retrieval layer: hybrid BM25+vector retrieval, Cross-Encoder reranking (Top-10), relevance threshold (>0.3)
+- Generation layer: mandatory source citation `[来源N]`, explicit refusal ("不知道"), confidence scoring
+- Post-processing layer: citation number verification + claim grounding verification (keyword overlap check against cited docs)
+- Evaluation layer: RAGAS framework (Faithfulness/Relevancy/Precision/Recall), BadCase management API
+- Human layer: user thumbs-up/down feedback collection
+
+### 7. Security Architecture
+- Prompt injection prevention: XML tag separation for all user-controlled content in LLM prompts
+- JWT authentication with Redis token revocation
+- RBAC: 6 system roles (system_admin, project_admin, knowledge_admin, project_member, viewer, guest)
+- Rate limiting per-user via Redis
+- Security headers (HSTS, X-Frame-Options, X-Content-Type-Options)
+- Credentials required at startup (ADMIN_PASSWORD must be set explicitly)
+
+### 8. Semantic Query Cache
+- Redis-backed cache with embedding-based similarity matching (threshold: 0.92 cosine similarity)
+- Aligns TTL (30 min) with knowledge base update cycle (30 min)
+- Graceful degradation when Redis unavailable
 ## Version Stability Notes
 | Component | Risk Level | Notes |
 |-----------|-----------|-------|
@@ -191,13 +210,53 @@
 <!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+### Role System
+System-level roles (User.role): `system_admin`, `project_admin`, `knowledge_admin`, `project_member`, `viewer`, `guest`
+Project-level roles (UserProject.role): `project_admin`, `knowledge_admin`, `project_member`, `viewer`
+Default role for new users: `project_member`
+
+### RAG Pipeline (CRAG via LangGraph)
+8-node StateGraph: route_query → understand_query → retrieve → grade_documents → [rewrite retry] → rerank → generate → verify
+All user input in LLM prompts MUST be wrapped in XML tags (`<query>`, `<document>`, `<context>`)
+
+### Document Processing Pipeline
+Flow: checksum check → delete old data → parse → clean → chunk (jieba boundary) → embed → dual-index (Milvus + ES)
+Pipeline instances are cached per Celery worker process (not created per document)
+
+### Chinese Chunking
+Two-phase: structural coarse split (headings) → recursive character split with jieba word boundary protection
+Parameters vary by doc type: technical (1000/200), design (800/150), meeting (600/100), table (whole-table)
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
 
-Architecture not yet mapped. Follow existing patterns found in the codebase.
+### Backend Structure
+```
+backend/app/
+├── api/          — FastAPI route handlers (auth, users, projects, datasources, documents, qa, health, evaluation)
+├── models/       — SQLAlchemy ORM models (User, Project, DataSource, Document, DocumentChunk, Conversation, Message)
+├── schemas/      — Pydantic request/response validation
+├── services/     — Business logic layer
+├── rag/          — Core RAG engine (CRAG pipeline, retrieval, reranking, generation, caching)
+├── processors/   — Document processing (parsing, chunking, embedding, indexing)
+├── connectors/   — Data source connectors (DingTalk, Seafile, NAS, local)
+├── middleware/    — Auth, logging, rate limiting, security headers, metrics
+├── tasks/        — Celery async tasks (document sync)
+└── utils/        — Auth helpers, logging, dedup
+```
+
+### Frontend Structure
+```
+frontend/src/
+├── app/          — Next.js App Router pages (login, chat, admin/*)
+├── components/   — React components (chat/*, admin/*, ui/*)
+└── lib/          — API client, auth, store (Zustand), types
+```
+
+### Key Data Flow
+Document sync → Parse (format-specific parser) → Clean → Chunk (jieba-aware) → Embed → Dual-index (Milvus + ES)
+Query → Route (LLM) → Rewrite + Intent → Hybrid Retrieve (Milvus dense+sparse + ES BM25) → RRF Fuse → Grade → Rerank → Generate (with citations) → Verify (citation + grounding) → Response
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->

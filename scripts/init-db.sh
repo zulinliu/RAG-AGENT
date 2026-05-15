@@ -15,7 +15,7 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 
 # Admin user defaults
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin123}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:?ERROR: ADMIN_PASSWORD environment variable must be set}"
 
 echo "[init-db] Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT} ..."
 
@@ -57,7 +57,7 @@ async def create_admin():
     from app.utils.security import hash_password
 
     email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
-    password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    password = os.environ["ADMIN_PASSWORD"]
 
     async for session in get_session():
         result = await session.execute(select(User).where(User.email == email))

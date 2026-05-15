@@ -277,6 +277,8 @@ class ChineseChunker:
         metadata: Dict[str, Any],
     ) -> List[Chunk]:
         """强制按字符数切分。"""
+        if overlap >= chunk_size:
+            overlap = chunk_size // 4
         chunks: List[Chunk] = []
         start = 0
         while start < len(text):
@@ -316,21 +318,41 @@ class ChineseChunker:
 
     @staticmethod
     def _fix_word_boundary(text: str) -> str:
-        """在截断点向前搜索最近的句子分隔符，修复词语边界。"""
+        """在截断点修复中文词语边界，避免在词中间切分。"""
         if not text:
             return text
 
-        # 中文句子分隔符，按优先级搜索
+        # 中文句子分隔符优先
         sentence_seps = "。！？；\n"
-        last_sep_pos = -1
-        for ch in reversed(text):
-            pos = text.rfind(ch)
-            if pos > last_sep_pos:
-                last_sep_pos = pos
+        for sep in sentence_seps:
+            pos = text.rfind(sep)
+            if pos > len(text) * 0.6:
+                return text[: pos + 1]
 
-        # 如果找到分隔符且在文本后半段，截断到该位置
-        if last_sep_pos > len(text) // 2:
-            return text[: last_sep_pos + 1]
+        # 使用 jieba 检查末尾是否为完整词
+        try:
+            import jieba
+            # 取末尾 20 字符检查词边界
+            tail = text[-20:] if len(text) > 20 else text
+            words = list(jieba.cut(tail))
+            if words:
+                last_word = words[-1]
+                # 如果最后一个词长度 > 1 且不完全在 tail 内，可能被截断
+                # 这种情况保留最后一个完整词
+                if len(last_word) > 1 and not tail.endswith(last_word):
+                    # 找到最后一个完整词的结束位置
+                    full_text_tail = text[-len(tail):]
+                    for i in range(len(words) - 1, -1, -1):
+                        word = words[i]
+                        if len(word) > 1 and full_text_tail.endswith(word):
+                            break
+                    else:
+                        # 没有完整词结尾，尝试截掉最后一个不完整词
+                        trimmed = text[: len(text) - len(words[-1])]
+                        if len(trimmed) >= len(text) * 0.6:
+                            return trimmed
+        except ImportError:
+            pass
 
         return text
 

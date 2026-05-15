@@ -84,3 +84,12 @@ def _guess_mime(file_path: str) -> str:
 
     mime, _ = mimetypes.guess_type(file_path)
     return mime or "application/octet-stream"
+
+
+# ---------------------------------------------------------------------------
+# Built-in parser registrations
+# ---------------------------------------------------------------------------
+
+from .image_parser import ImageParser  # noqa: E402
+
+register_parser(ImageParser())

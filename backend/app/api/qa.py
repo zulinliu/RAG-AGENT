@@ -170,3 +170,23 @@ async def submit_feedback(
     except Exception:
         logger.exception("submit feedback failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    qa_service: QAService = Depends(_get_qa_service),
+) -> dict[str, str]:
+    """删除对话。"""
+    user_id = current_user["user_id"]
+    try:
+        deleted = await qa_service.delete_conversation(conversation_id, user_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="对话不存在")
+        return {"status": "deleted"}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("delete conversation failed")
+        raise HTTPException(status_code=500, detail="Internal server error")

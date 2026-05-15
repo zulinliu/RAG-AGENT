@@ -50,7 +50,7 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=2, max_length=64)
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
-    role: str = Field(default="user")
+    role: str = Field(default="project_member")
 
     @field_validator("password")
     @classmethod
@@ -60,7 +60,7 @@ class UserCreate(BaseModel):
     @field_validator("role")
     @classmethod
     def validate_role(cls, v: str) -> str:
-        allowed = {"system_admin", "project_admin", "knowledge_admin", "user", "readonly"}
+        allowed = {"system_admin", "project_admin", "knowledge_admin", "project_member", "viewer", "guest"}
         if v not in allowed:
             raise ValueError(f"Role must be one of {allowed}")
         return v
@@ -86,7 +86,7 @@ class UserUpdate(BaseModel):
     def validate_role(cls, v: str | None) -> str | None:
         if v is None:
             return v
-        allowed = {"system_admin", "project_admin", "knowledge_admin", "user", "readonly"}
+        allowed = {"system_admin", "project_admin", "knowledge_admin", "project_member", "viewer", "guest"}
         if v not in allowed:
             raise ValueError(f"Role must be one of {allowed}")
         return v
@@ -112,7 +112,7 @@ class UserRoleUpdate(BaseModel):
     @field_validator("role")
     @classmethod
     def validate_role(cls, v: str) -> str:
-        allowed = {"system_admin", "project_admin", "knowledge_admin", "user", "readonly"}
+        allowed = {"system_admin", "project_admin", "knowledge_admin", "project_member", "viewer", "guest"}
         if v not in allowed:
             raise ValueError(f"Role must be one of {allowed}")
         return v

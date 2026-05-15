@@ -57,6 +57,8 @@ class DocumentPipeline:
     @classmethod
     def from_settings(cls, settings: Any) -> "DocumentPipeline":
         """Create a pipeline instance from application settings."""
+        from app.processors.indexer import DualIndexer
+
         emb_cfg = settings.embedding
         embedding_svc = EmbeddingService(
             provider=emb_cfg.provider,
@@ -65,7 +67,17 @@ class DocumentPipeline:
             model_name=emb_cfg.model_name,
             batch_size=emb_cfg.batch_size,
         )
-        return cls(embedding_service=embedding_svc)
+        indexer = DualIndexer(
+            milvus_host=settings.milvus.host,
+            milvus_port=settings.milvus.port,
+            milvus_collection=settings.milvus.collection_name,
+            es_hosts=[f"http://{settings.elasticsearch.host}:{settings.elasticsearch.port}"],
+            es_index_prefix="rag",
+            pg_dsn=settings.db.sync_url,
+            vector_dim=emb_cfg.vector_dim if hasattr(emb_cfg, "vector_dim") else 1024,
+        )
+        indexer.connect()
+        return cls(indexer=indexer, embedding_service=embedding_svc)
 
     def process_document(
         self,
@@ -107,6 +119,12 @@ class DocumentPipeline:
                     metadata={"checksum": checksum, "reason": "unchanged"},
                 )
 
+            # 清理旧数据（重新索引时）
+            try:
+                self.indexer.delete_document(doc_id)
+            except Exception:
+                logger.debug("No existing data to clean up for doc %s", doc_id)
+
             # 步骤 2: 解析文档
             sections = auto_parse(actual_path, mime_type)
             if not sections:
@@ -142,7 +160,7 @@ class DocumentPipeline:
 
             # 步骤 5: 向量化
             texts = [chunk.content for chunk in chunks]
-            vectors = asyncio.run(self.embedding_service.encode(texts))
+            vectors = self._run_async(self.embedding_service.encode(texts))
             logger.info("向量化完成: %d 个向量", len(vectors))
 
             # 步骤 6: 双索引写入
@@ -196,6 +214,20 @@ class DocumentPipeline:
     def delete_document(self, document_id: str) -> bool:
         """删除文档及其所有索引数据。"""
         return self.indexer.delete_document(document_id)
+
+    @staticmethod
+    def _run_async(coro):
+        """Run an async coroutine from sync context, safe for Celery workers."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, coro).result()
+        return asyncio.run(coro)
 
     # ------------------------------------------------------------------
     # 内部方法

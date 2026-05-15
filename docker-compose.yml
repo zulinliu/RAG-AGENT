@@ -132,7 +132,7 @@ services:
       - ./config/redis/redis.conf:/usr/local/etc/redis/redis.conf
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-ragagent123}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -259,6 +259,7 @@ services:
       RERANKER_THRESHOLD: ${RERANKER_THRESHOLD:-0.3}
       # Auth
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-changeme-use-strong-secret-in-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-dev}
     volumes:

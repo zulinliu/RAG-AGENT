@@ -37,7 +37,7 @@ class QueryUnderstanding:
             "2. 补充隐含的上下文\n"
             "3. 使用更明确的表述\n"
             "4. 仅输出改写后的查询，不要任何解释\n\n"
-            f"原始查询: {query}"
+            "<query>\n" + query + "\n</query>"
         )
         try:
             rewritten = await llm_client.generate(prompt, temperature=0.1, max_tokens=256)
@@ -76,7 +76,7 @@ class QueryUnderstanding:
             "- comparison: 比较两个或多个事物\n"
             "- process: 查询流程、步骤或方法\n"
             "- unknown: 无法判断\n\n"
-            f"查询: {query}"
+            "<query>\n" + query + "\n</query>"
         )
         try:
             raw = await llm_client.generate(prompt, temperature=0.0, max_tokens=32)
@@ -111,8 +111,8 @@ class QueryUnderstanding:
         prompt = (
             "根据以下用户查询和用户可访问的项目列表，判断查询涉及哪个项目。\n"
             "仅输出项目ID，如果没有匹配的项目则输出 NONE。\n\n"
-            f"用户查询: {query}\n\n"
-            f"项目列表:\n{project_descriptions}"
+            "<query>\n" + query + "\n</query>\n\n"
+            "<projects>\n" + project_descriptions + "\n</projects>"
         )
         try:
             raw = await llm_client.generate(prompt, temperature=0.0, max_tokens=64)

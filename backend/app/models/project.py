@@ -68,6 +68,7 @@ class DataSource(Base, BaseMixin):
         comment="idle / syncing / error",
     )
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # relationships

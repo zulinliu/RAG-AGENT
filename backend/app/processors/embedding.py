@@ -11,6 +11,7 @@ Providers:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -48,7 +49,7 @@ class EmbeddingService:
             return []
 
         if self.provider == "local-py":
-            return self._encode_local(texts)
+            return await asyncio.to_thread(self._encode_local, texts)
         return await self._encode_remote(texts)
 
     async def encode_single(self, text: str) -> list[float]:

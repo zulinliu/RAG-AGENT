@@ -9,7 +9,15 @@ import logging
 import os
 import time
 
-from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, MilvusClient
+from pymilvus import (
+    Collection,
+    CollectionSchema,
+    DataType,
+    FieldSchema,
+    Function,
+    FunctionType,
+    MilvusClient,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -85,6 +93,11 @@ def create_collection() -> None:
             description="Dense embedding vector",
         ),
         FieldSchema(
+            name="sparse_vector",
+            dtype=DataType.SPARSE_FLOAT_VECTOR,
+            description="BM25 sparse vector for keyword matching",
+        ),
+        FieldSchema(
             name="chunk_type",
             dtype=DataType.VARCHAR,
             max_length=32,
@@ -120,9 +133,17 @@ def create_collection() -> None:
         ),
     ]
 
+    bm25_function = Function(
+        name="bm25_function",
+        input_field_names=["content"],
+        output_field_names=["sparse_vector"],
+        function_type=FunctionType.BM25,
+    )
+
     schema = CollectionSchema(
         fields=fields,
-        description="RAG chunk storage with dense vectors",
+        functions=[bm25_function],
+        description="RAG chunk storage with dense + sparse (BM25) vectors",
     )
 
     collection = Collection(
@@ -144,6 +165,17 @@ def create_collection() -> None:
         index_params=index_params,
     )
     logger.info("Created HNSW index on 'vector' field.")
+
+    # ── Sparse vector index (BM25) ────────────────────────────────────
+    sparse_index_params = {
+        "index_type": "SPARSE_INVERTED_INDEX",
+        "metric_type": "IP",
+    }
+    collection.create_index(
+        field_name="sparse_vector",
+        index_params=sparse_index_params,
+    )
+    logger.info("Created sparse index on 'sparse_vector' field (BM25).")
 
     # ── Load into memory ──────────────────────────────────────────────
     collection.load()

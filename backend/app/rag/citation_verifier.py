@@ -79,3 +79,56 @@ class CitationVerifier:
             )
 
         return result
+
+    @staticmethod
+    def verify_claim_grounding(answer: str, docs: list) -> dict:
+        """验证答案中的引用内容是否在引用文档中实际存在。
+
+        对每个 [来源N] 标注的内容，检查其上下文是否与对应文档内容有足够重叠。
+        """
+        if not docs or not answer:
+            return {"grounding_rate": 0.0, "ungrounded_citations": []}
+
+        citation_pattern = re.compile(r"\[来源(\d+)\]")
+        ungrounded: list[int] = []
+        total_citations = 0
+
+        # 按引用位置拆分答案，检查每个引用前的文本
+        parts = citation_pattern.split(answer)
+
+        for i in range(1, len(parts), 2):
+            try:
+                source_idx = int(parts[i]) - 1
+            except (ValueError, IndexError):
+                continue
+
+            total_citations += 1
+            if source_idx < 0 or source_idx >= len(docs):
+                ungrounded.append(source_idx + 1)
+                continue
+
+            # 获取引用后的文本（该来源声明的实际内容）
+            claim_text = parts[i + 1].strip() if i + 1 < len(parts) else ""
+            if not claim_text:
+                continue
+
+            # 检查声明内容与文档的关键词重叠度
+            doc_content = docs[source_idx].content if hasattr(docs[source_idx], "content") else str(docs[source_idx])
+
+            # 简单关键词重叠检查：提取声明中的关键短语
+            overlap_count = 0
+            claim_phrases = [p.strip() for p in re.split(r"[，。、；！？\s]+", claim_text) if len(p.strip()) >= 3]
+            for phrase in claim_phrases[:5]:  # 只检查前5个关键短语
+                if phrase in doc_content:
+                    overlap_count += 1
+
+            # 如果没有任何关键短语在文档中出现，标记为未落地
+            if claim_phrases and overlap_count == 0:
+                ungrounded.append(source_idx + 1)
+
+        grounding_rate = 1.0 - (len(ungrounded) / max(total_citations, 1))
+        return {
+            "grounding_rate": grounding_rate,
+            "ungrounded_citations": ungrounded,
+            "total_citations": total_citations,
+        }

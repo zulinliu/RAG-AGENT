@@ -259,7 +259,10 @@ class DualIndexer:
 
     def _ensure_milvus_collection(self) -> None:
         """确保 Milvus 集合存在（统一 schema，与 config/milvus/collection.py 保持一致）。"""
-        from pymilvus import utility, Collection, FieldSchema, CollectionSchema, DataType
+        from pymilvus import (
+            utility, Collection, FieldSchema, CollectionSchema, DataType,
+            Function, FunctionType,
+        )
 
         if utility.has_collection(self.milvus_collection):
             return
@@ -305,6 +308,11 @@ class DualIndexer:
                 description="Dense embedding vector",
             ),
             FieldSchema(
+                name="sparse_vector",
+                dtype=DataType.SPARSE_FLOAT_VECTOR,
+                description="BM25 sparse vector for keyword matching",
+            ),
+            FieldSchema(
                 name="chunk_type",
                 dtype=DataType.VARCHAR,
                 max_length=32,
@@ -339,9 +347,17 @@ class DualIndexer:
                 description="Creation timestamp (epoch seconds)",
             ),
         ]
+        bm25_function = Function(
+            name="bm25_function",
+            input_field_names=["content"],
+            output_field_names=["sparse_vector"],
+            function_type=FunctionType.BM25,
+        )
+
         schema = CollectionSchema(
             fields=fields,
-            description="RAG chunk storage with dense vectors",
+            functions=[bm25_function],
+            description="RAG chunk storage with dense + sparse (BM25) vectors",
         )
         collection = Collection(name=self.milvus_collection, schema=schema)
 
@@ -352,8 +368,16 @@ class DualIndexer:
             "params": {"M": 16, "efConstruction": 256},
         }
         collection.create_index(field_name="vector", index_params=index_params)
+
+        # 创建稀疏向量索引 (BM25)
+        sparse_index_params = {
+            "index_type": "SPARSE_INVERTED_INDEX",
+            "metric_type": "IP",
+        }
+        collection.create_index(field_name="sparse_vector", index_params=sparse_index_params)
+
         collection.load()
-        logger.info("Milvus 集合已创建 (HNSW, efConstruction=256): %s", self.milvus_collection)
+        logger.info("Milvus 集合已创建 (HNSW + BM25 sparse): %s", self.milvus_collection)
 
     def _write_milvus(
         self,

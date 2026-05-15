@@ -32,6 +32,7 @@ def upgrade() -> None:
         sa.Column("display_name", sa.String(128), nullable=True),
         sa.Column("avatar_url", sa.Text, nullable=True),
         sa.Column("role", sa.String(32), nullable=False, server_default="user"),
+        sa.Column("status", sa.String(16), nullable=False, server_default="active"),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
     )
@@ -73,6 +74,7 @@ def upgrade() -> None:
         sa.Column("sync_status", sa.String(32), server_default="idle", nullable=True),
         sa.Column("last_synced_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
+        sa.Column("last_sync_error", sa.Text, nullable=True),
     )
 
     # --- documents ---
